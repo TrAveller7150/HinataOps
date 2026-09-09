@@ -61,6 +61,13 @@ class AoiJudgeToolsetSettings(BaseModel):
     prometheus_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
 
 
+class ActionSettings(BaseModel):
+    """一个环境中允许注册的写操作及其服务级最小权限范围。"""
+
+    enabled: bool = False
+    allowed_services: list[str] = Field(default_factory=list)
+
+
 class EnvironmentConfig(BaseModel):
     """一个目标环境已校验的拓扑与连接配置。"""
 
@@ -70,6 +77,7 @@ class EnvironmentConfig(BaseModel):
     instances: list[InfrastructureInstanceConfig]
     toolsets: list[ToolsetConfig]
     aoi_judge: AoiJudgeToolsetSettings
+    actions: ActionSettings = Field(default_factory=ActionSettings)
 
     def service(self, name: str) -> ServiceConfig:
         """按名称查找已配置服务；未找到时返回包含可选项的校验错误。"""

@@ -432,7 +432,45 @@ aoi_judge_get_outbox_summary
 
 通用 SQL 不以应用层字符串检查作为唯一防线：目标数据库必须使用专用只读账号，且 Tool 仅接受 `SELECT`、`SHOW`、`DESCRIBE`、`EXPLAIN`、`WITH` 等读取语句。Redis 必须通过 ACL 禁止 `FLUSH*`、`CONFIG`、`DEBUG`、`MONITOR`、`EVAL` 和所有写命令。通用 HTTP 查询同样必须限制主机、路径和方法。所有通用 Tool 调用均应被审计。
 
-### 9.4 写工具
+### 9.4 Core + 可插拔领域 Toolset
+
+P1.5 已将 Docker、Redis、MySQL 和 Prometheus 的访问细节下沉到 `adapters/`，并将
+AoiLearn 判题表、Stream 和指标名放入 `aoi_learn_judge` 领域 Toolset。这只是第一步：
+**当前 `server.py` 仍直接注册 AoiLearn Toolset，`config.py` 仍直接定义 AoiLearn 判题配置，
+因此 Core 尚未完成对领域模块的解耦。**
+
+目标结构采用“Core + Plugin”模式，类似 Spring Boot 应用通过 Starter / 自动配置接入业务模块：
+
+```text
+HinataOps Core
+  ├── 通用 MCP Server 生命周期与 Tool 注册表
+  ├── SSH 与基础设施 Adapter
+  ├── 通用环境、实例、策略与 Toolset 启用配置
+  └── Toolset Plugin 发现机制
+
+AoiLearn Judge Plugin
+  ├── AoiLearn 专属配置模型
+  ├── AoiLearnJudgeToolset 与领域 Inspector
+  └── aoi_judge_* MCP Tool 注册器
+
+Bondgumi Plugin（未来）
+  └── 仅依赖 Core 契约，独立提供自身配置、领域 Tool 与注册器
+```
+
+Core 只能认识通用的 `toolset.name`、启用状态、已配置实例和资源策略；不得出现
+`aoi_judge`、表名、Redis Key、Prometheus target 或 AoiLearn 专属配置类。领域 Plugin
+负责校验并解释自己的配置，再使用 Core 提供的受限 Adapter。
+
+“只改配置”与“新增领域能力”有不同边界：同一个已安装 Toolset 接入新环境时，只需调整
+SSH、实例映射和该 Toolset 配置；接入一种从未支持的业务系统时，必须新增一个独立 Plugin，
+因为表结构、故障语义和恢复检查属于代码中的领域知识，不能由 TOML 安全地产生。
+
+Python 实现采用包元数据的 entry point 发现 Plugin。新增 Plugin 只需作为独立包安装并声明
+`hinataops.toolsets` entry point；Core 在启动时发现已安装 Plugin，再按环境配置启用它们。
+这避免了为接入 Bondgumi 而修改 Core 的 `server.py` 或 `config.py`。Plugin 对外暴露的最小
+契约为：唯一名称、专属配置校验、以及向 MCP 注册其 Tool 的方法。
+
+### 9.5 写工具
 
 第一阶段唯一实际写工具：
 
@@ -699,9 +737,13 @@ Bondgumi 环境配置不注册 `action_*` Tool。
 - `docker_restart_service`。
 - 执行后恢复验证。
 
-### 阶段 2.5：受控通用 Toolset
+### 阶段 2.5：可插拔 Toolset 与受控通用 Toolset
 
-- 将 P1 的判题查询迁入 `aoi_learn_judge` 领域 Toolset，并采用 `aoi_judge_*` 命名。
+- 完成 Core 与领域 Plugin 的装配解耦：`server.py` 仅发现并启用 Plugin；AoiLearn 配置模型和
+  MCP 注册代码迁入 AoiLearn Plugin。
+- 通过 entry point 发现已安装 Plugin；为缺失 Plugin、重复名称、禁用 Plugin 和非法 Plugin
+  配置编写契约测试。
+- 将 P1 的判题查询保留在 `aoi_learn_judge` 领域 Toolset，并采用 `aoi_judge_*` 命名。
 - 实现可配置实例的 `mysql_readonly`、`redis_readonly`、`prometheus` 和 `docker_readonly` Toolset。
 - 为每类通用 Tool 实现最小权限凭证、输入策略、输出预算、审计记录和契约测试。
 - 在 Agent 路由中落实“领域 Tool 优先；证据不足时才使用通用 Tool”的策略。

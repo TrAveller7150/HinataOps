@@ -31,3 +31,17 @@ uv run pytest
 所有领域 Tool 均返回统一的采集环境、UTC 时间、完整性标记、警告和结构化错误；不接受任意 Redis 键、SQL、PromQL 或远端命令。
 
 `history_length` 是 Redis Stream 的历史保留消息数，不等于积压。判断消费滞后应使用 Consumer Group 的 `lag` 与 `pending`。
+
+## P2：人工审批的受控重启
+
+P2 增加 SQLite 动作账本。动作计划包含目标服务、理由、风险、回滚方案和预先声明的恢复检查；人工审批必须提交与计划内容一致的 SHA-256 指纹。MCP 写 Tool 只接受 `action_id`，并且只能一次性领取已批准的计划，因此不会接受容器名、Shell 命令或可替换的执行参数。
+
+`docker_restart_service` 默认不注册。若要在故障注入环境演示它，需在本机忽略的环境配置中显式设置：
+
+```toml
+[actions]
+enabled = true
+allowed_services = ["judge-python"]
+```
+
+执行结果不能直接视为恢复；Tool 会重新检查容器运行状态，并对 Judge 服务检查 Prometheus `up` 指标。动作账本默认位于 `.hinataops/state.sqlite3`，可通过 `HINATAOPS_STATE_DB` 指定给审批端与 MCP Server 共享的路径。

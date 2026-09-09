@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from hinataops.ops_mcp.config import load_environment_config
+from hinataops.ops_mcp.config import ActionSettings
 from hinataops.ops_mcp.server import create_server
 
 
@@ -19,3 +20,15 @@ def test_server_exposes_only_enabled_domain_toolset() -> None:
         "aoi_judge_get_runtime",
     }
     assert not any(name.startswith(("mysql_", "redis_", "prometheus_", "docker_")) for name in tool_names)
+
+
+def test_server_registers_restart_only_when_actions_are_explicitly_enabled() -> None:
+    """验证写 Tool 不会因环境配置遗漏而默认暴露。"""
+    config = load_environment_config(Path("config/environments/aoi-local.example.toml"))
+    enabled_config = config.model_copy(
+        update={"actions": ActionSettings(enabled=True, allowed_services=["judge-python"])}
+    )
+
+    tool_names = {tool.name for tool in create_server(lambda: enabled_config)._tool_manager.list_tools()}
+
+    assert "docker_restart_service" in tool_names

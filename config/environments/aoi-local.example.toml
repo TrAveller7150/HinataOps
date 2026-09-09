@@ -27,6 +27,11 @@ docker_instance_id = "aoi-docker"
 mysql_instance_id = "aoi-mysql"
 prometheus_instance_id = "aoi-prometheus"
 
+[actions]
+# 写操作默认关闭；真实演示前仅为经过故障注入验证的服务显式启用。
+enabled = false
+allowed_services = []
+
 [[toolsets]]
 name = "aoi_learn_judge"
 enabled = true

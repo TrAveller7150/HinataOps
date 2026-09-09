@@ -232,6 +232,27 @@ HinataOps 同时保留两类只读能力，而不是在“只提供定制查询�
 
 对于 AoiLearn，判题领域 Toolset 应优先于通用 Toolset。一个典型路径是先调用 `aoi_judge_get_pipeline_summary`，仅当它不能解释问题时，再带着具体假设调用受控 PromQL、只读 SQL 或 Redis Stream 查询。
 
+#### Core + Plugin 扩展边界
+
+HinataOps Core 提供 MCP 生命周期、实例注册表、访问策略和基础设施 Adapter；领域 Toolset
+以独立 Plugin 的形式提供业务配置、领域解释器与 MCP Tool 注册逻辑。Core 不得直接导入
+`aoi_learn_judge`，也不得在通用 `EnvironmentConfig` 中定义 AoiLearn 的表、Stream、指标或
+Toolset 设置。
+
+当前 P1.5 已完成领域解释器与 Adapter 的分层，但 Core 仍直接注册 AoiLearn Toolset，且
+`config.py` 仍持有 AoiLearn 配置模型。这是待完成的架构改造，而非已达成状态。
+
+扩展规则如下：
+
+1. 对已安装的 Toolset 接入另一环境，只修改该环境的实例映射、凭证引用与 Toolset 配置。
+2. 对新业务系统，新增独立 Plugin；其配置模型、领域 SQL/指标/Stream 和 Tool 注册器均留在
+   Plugin 内，而不修改 Core。
+3. Core 通过 Python package entry point 发现 Plugin，并仅根据通用的名称与启用状态装配它。
+4. Plugin 可以复用 Core 的 Adapter，但不能绕开策略、实例注册表或 MCP 返回契约。
+
+该模式对应 Java/Spring Boot 中的 `core` 模块加业务 `starter`：Starter 被安装后由自动配置
+发现；新业务能力不是由 YAML/TOML 凭空生成，而是由独立模块提供并由配置选择启用。
+
 ### 7.2 第一阶段只读工具
 
 ```text

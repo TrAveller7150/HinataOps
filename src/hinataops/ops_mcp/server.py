@@ -5,19 +5,26 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import Literal
+from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
-from hinataops.ops_mcp.adapters import SshCommandError
+from hinataops.actions.models import ActionExecutionReport, VerificationResult
+from hinataops.actions.repository import ActionRepository, InvalidActionStateError
+from hinataops.actions.runtime import action_repository
+from hinataops.ops_mcp.adapters import SshCommandError, SshRunner
+from hinataops.ops_mcp.actions import DockerRestartExecutor
 from hinataops.ops_mcp.config import EnvironmentConfig, load_environment_config
 from hinataops.ops_mcp.contracts import ObservationError, new_metadata
 from hinataops.ops_mcp.toolsets.aoi_learn_judge import AoiLearnJudgeToolset
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.restart import AoiJudgeRestartVerifier
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.pipeline_summary import MysqlJudgePipelineSummary
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.runtime_summary import PrometheusJudgeRuntimeSummary
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage, RedisStreamSummary
 
 logger = logging.getLogger(__name__)
 ConfigProvider = Callable[[], EnvironmentConfig]
+ActionRepositoryProvider = Callable[[], ActionRepository]
 
 
 def _observation_error(source: str, error: Exception) -> ObservationError:
@@ -140,12 +147,92 @@ def _register_aoi_judge_toolset(mcp: FastMCP, config_provider: ConfigProvider) -
         return result.model_dump(mode="json")
 
 
-def create_server(config_provider: ConfigProvider = load_environment_config) -> FastMCP:
+def _register_action_tools(
+    mcp: FastMCP,
+    config_provider: ConfigProvider,
+    repository_provider: ActionRepositoryProvider,
+) -> None:
+    """注册只消费持久化审批计划的单个 Docker 写 Tool。"""
+
+    @mcp.tool(name="docker_restart_service")
+    async def docker_restart_service(action_id: UUID) -> dict:
+        """执行已批准的服务重启，并记录重启后恢复验证结果。
+
+        调用方只能提交审批系统生成的 ``action_id``。服务名、容器名、命令和验证条件均从
+        持久化计划与环境配置读取，不能通过 MCP 参数绕过审批或扩大写入范围。
+        """
+        config = config_provider()
+        repository = repository_provider()
+        plan, status = repository.get(action_id)
+        if (
+            not config.actions.enabled
+            or plan.action_type != "docker_restart_service"
+            or plan.environment != config.environment.name
+            or plan.service not in config.actions.allowed_services
+        ):
+            return ActionExecutionReport(
+                action_id=action_id,
+                service=plan.service,
+                status=status,
+                error="动作计划不属于当前允许执行的环境或服务",
+            ).model_dump(mode="json")
+
+        try:
+            plan = repository.claim_approved(action_id)
+        except InvalidActionStateError:
+            _, current_status = repository.get(action_id)
+            return ActionExecutionReport(
+                action_id=action_id,
+                service=plan.service,
+                status=current_status,
+                error="动作尚未获批，或已被其他执行器领取",
+            ).model_dump(mode="json")
+
+        docker_instance = config.instance(config.aoi_judge.docker_instance_id, "docker")
+        try:
+            execution = await DockerRestartExecutor(
+                SshRunner(config.environment), docker_instance
+            ).restart(config.service(plan.service).container)
+        except Exception as error:
+            repository.record_execution(action_id, {"message": type(error).__name__}, succeeded=False)
+            return ActionExecutionReport(
+                action_id=action_id,
+                service=plan.service,
+                status="execution_failed",
+                error="容器重启命令未成功完成",
+            ).model_dump(mode="json")
+
+        repository.record_execution(action_id, execution.model_dump(mode="json"), succeeded=True)
+        try:
+            verification = await AoiJudgeRestartVerifier(config).verify(plan.service)
+        except Exception as error:
+            verification = VerificationResult(
+                passed=False,
+                checks={"verification_collection": False},
+            )
+            logger.warning("动作 %s 的恢复验证采集失败: %s", action_id, error)
+        final_status = repository.record_verification(action_id, verification)
+        return ActionExecutionReport(
+            action_id=action_id,
+            service=plan.service,
+            status=final_status,
+            execution=execution.model_dump(mode="json"),
+            verification=verification,
+        ).model_dump(mode="json")
+
+
+def create_server(
+    config_provider: ConfigProvider = load_environment_config,
+    repository_provider: ActionRepositoryProvider = action_repository,
+) -> FastMCP:
     """按配置构建 MCP Server，只注册被明确启用的领域 Toolset。"""
     mcp = FastMCP("HinataOps Ops")
     _register_topology_tool(mcp, config_provider)
-    if config_provider().toolset_enabled("aoi_learn_judge"):
+    config = config_provider()
+    if config.toolset_enabled("aoi_learn_judge"):
         _register_aoi_judge_toolset(mcp, config_provider)
+    if config.actions.enabled:
+        _register_action_tools(mcp, config_provider, repository_provider)
     return mcp
 
 
