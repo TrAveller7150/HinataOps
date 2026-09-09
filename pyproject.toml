@@ -5,6 +5,7 @@ description = "Evidence-driven operations agent demo"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "langgraph>=1.0,<2",
     "mcp>=1.26,<2",
     "pydantic>=2.12,<3",
 ]

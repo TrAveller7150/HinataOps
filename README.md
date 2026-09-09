@@ -45,3 +45,9 @@ allowed_services = ["judge-python"]
 ```
 
 执行结果不能直接视为恢复；Tool 会重新检查容器运行状态，并对 Judge 服务检查 Prometheus `up` 指标。动作账本默认位于 `.hinataops/state.sqlite3`，可通过 `HINATAOPS_STATE_DB` 指定给审批端与 MCP Server 共享的路径。
+
+## P3.3：受预算的调查工作流
+
+`agent_core/` 已接入 LangGraph 的最小调查循环：加载当前 MCP Tool Catalog、由 Planner 选择下一轮只读检查、由确定性策略校验白名单/重复调用/轮次和总调用预算、并发采集证据，再决定继续或结束。
+
+当前使用可脚本化 Planner 验证编排边界，尚未接入 LLM（P3.4）或写 Tool。每次运行均保留已完成调用、结构化 Observation 和明确的停止原因；拒绝的调用不会到达 MCP Server。
