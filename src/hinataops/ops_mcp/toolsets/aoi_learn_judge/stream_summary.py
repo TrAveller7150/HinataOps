@@ -5,9 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from hinataops.config import JudgeStreamConfig
-from hinataops.observation import ObservationMetadata, new_metadata
-from hinataops.ssh import SshRunner
+from hinataops.ops_mcp.adapters.redis import RedisReadonlyAdapter
+from hinataops.ops_mcp.config import JudgeStreamConfig
+from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
 
 JudgeLanguage = Literal["python", "sql"]
 
@@ -44,26 +44,20 @@ class RedisStreamInspector:
 
     def __init__(
         self,
-        runner: SshRunner,
         environment_name: str,
-        redis_container: str,
+        redis: RedisReadonlyAdapter,
         streams: list[JudgeStreamConfig],
     ) -> None:
-        self._runner = runner
         self._environment_name = environment_name
-        self._redis_container = redis_container
+        self._redis = redis
         self._streams = {stream.language: stream for stream in streams}
 
     async def summary(self, language: JudgeLanguage) -> RedisStreamSummary:
         """采集一种语言的历史长度、Group lag 与 pending 状态。"""
         stream = self._stream(language)
-        groups_raw = await self._runner.run(
-            self._redis_command("XINFO", "GROUPS", stream.stream_key)
-        )
-        pending_raw = await self._runner.run(
-            self._redis_command("XPENDING", stream.stream_key, stream.consumer_group)
-        )
-        length_raw = await self._runner.run(self._redis_command("XLEN", stream.stream_key))
+        groups_raw = await self._redis.xinfo_groups(stream.stream_key)
+        pending_raw = await self._redis.xpending(stream.stream_key, stream.consumer_group)
+        length_raw = await self._redis.xlen(stream.stream_key)
 
         groups = json.loads(groups_raw)
         group = next(
@@ -101,12 +95,6 @@ class RedisStreamInspector:
             return self._streams[language]
         except KeyError as error:
             raise ValueError(f"Judge stream for language '{language}' is not configured") from error
-
-    def _redis_command(self, *arguments: str) -> str:
-        """构造固定 redis-cli 调用，不接收来自 MCP 的自由命令文本。"""
-        return " ".join(
-            ["docker", "exec", self._redis_container, "redis-cli", "--json", *arguments]
-        )
 
     @staticmethod
     def _optional_int(value: object) -> int | None:

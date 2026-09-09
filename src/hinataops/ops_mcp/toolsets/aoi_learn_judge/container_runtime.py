@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 
 from pydantic import BaseModel
 
-from hinataops.config import ServiceConfig
-from hinataops.ssh import SshRunner
+from hinataops.ops_mcp.adapters.docker import DockerReadonlyAdapter
+from hinataops.ops_mcp.config import ServiceConfig
+from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
 
 
 class ContainerSnapshot(BaseModel):
@@ -31,6 +31,7 @@ class ServiceSnapshot(BaseModel):
 class DockerSnapshot(BaseModel):
     """只读容器观测 Tool 返回的有界 Docker 证据。"""
 
+    metadata: ObservationMetadata
     services: list[ServiceSnapshot]
     sandbox_pool_running: int
     sandbox_pool_exited: int
@@ -48,30 +49,24 @@ class DockerInspector:
 
     # ``-a`` 必不可少：已停止的配置服务本身就是证据；``docker ps`` 会遗漏它，导致其
     # 无法与配置错误区分。
-    _LIST_CONTAINERS_COMMAND = "docker ps -a --format '{{json .}}'"
     # 共享开发虚拟机中的历史容器可能很多。保留总数与少量样本即可，不能耗尽 Agent 上下文。
     _MAX_RECENT_UNMANAGED_EXITED = 10
 
-    def __init__(self, runner: SshRunner, services: Sequence[ServiceConfig]) -> None:
-        self._runner = runner
+    def __init__(
+        self,
+        environment_name: str,
+        docker: DockerReadonlyAdapter,
+        services: Sequence[ServiceConfig],
+    ) -> None:
+        self._environment_name = environment_name
+        self._docker = docker
         self._services = list(services)
         self._configured_container_names = {service.container for service in services}
 
     async def snapshot(self) -> DockerSnapshot:
         """使用固定只读查询采集并分类当前 Docker 状态。"""
-        output = await self._runner.run(self._LIST_CONTAINERS_COMMAND)
-        # 使用 Docker JSON 格式化器，避免解析状态文本和镜像名中可能包含空格的展示列。
-        containers = [
-            ContainerSnapshot(
-                name=item["Names"],
-                image=item["Image"],
-                state=item["State"],
-                status=item["Status"],
-            )
-            for line in output.splitlines()
-            if line.strip()
-            for item in [json.loads(line)]
-        ]
+        # Docker JSON 解析属于通用适配器；这里仅保留 AoiLearn 的拓扑与沙箱诊断语义。
+        containers = [ContainerSnapshot.model_validate(item.model_dump()) for item in await self._docker.list_containers()]
         containers_by_name = {item.name: item for item in containers}
         # 遍历配置服务而不是观测到的容器，使缺失的关键容器能明确标为 ``missing``，而非悄然消失。
         known_services = [
@@ -97,6 +92,7 @@ class DockerInspector:
             and item not in sandbox_pool
         ]
         return DockerSnapshot(
+            metadata=new_metadata(self._environment_name, "docker"),
             services=known_services,
             sandbox_pool_running=sum(item.state == "running" for item in sandbox_pool),
             sandbox_pool_exited=sum(item.state != "running" for item in sandbox_pool),

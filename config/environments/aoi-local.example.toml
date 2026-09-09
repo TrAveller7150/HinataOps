@@ -11,14 +11,64 @@ language = "python"
 stream_key = "judge-tasks-python"
 consumer_group = "judge-python-workers"
 judge_service = "judge-python"
-prometheus_instance = "judge-python:8001"
+redis_instance_id = "aoi-redis"
+prometheus_target = "judge-python:8001"
 
 [[judge_streams]]
 language = "sql"
 stream_key = "judge-tasks-sql"
 consumer_group = "judge-sql-workers"
 judge_service = "judge-sql"
-prometheus_instance = "judge-sql:8002"
+redis_instance_id = "aoi-redis"
+prometheus_target = "judge-sql:8002"
+
+[aoi_judge]
+docker_instance_id = "aoi-docker"
+mysql_instance_id = "aoi-mysql"
+prometheus_instance_id = "aoi-prometheus"
+
+[[toolsets]]
+name = "aoi_learn_judge"
+enabled = true
+
+[[instances]]
+id = "aoi-docker"
+kind = "docker"
+[instances.policy]
+max_output_bytes = 262144
+max_items = 100
+timeout_seconds = 15
+audit_enabled = true
+
+[[instances]]
+id = "aoi-redis"
+kind = "redis"
+container = "aoi-learn-redis-1"
+[instances.policy]
+max_output_bytes = 65536
+max_items = 100
+timeout_seconds = 15
+audit_enabled = true
+
+[[instances]]
+id = "aoi-mysql"
+kind = "mysql"
+container = "aoi-learn-mysql-1"
+[instances.policy]
+max_output_bytes = 65536
+max_items = 100
+timeout_seconds = 15
+audit_enabled = true
+
+[[instances]]
+id = "aoi-prometheus"
+kind = "prometheus"
+access_container = "aoi-learn-server-1"
+[instances.policy]
+max_output_bytes = 131072
+max_items = 100
+timeout_seconds = 15
+audit_enabled = true
 
 [[services]]
 name = "nginx"

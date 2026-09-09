@@ -4,9 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from hinataops.observation import ObservationMetadata, new_metadata
-from hinataops.redis_observer import JudgeLanguage
-from hinataops.ssh import SshRunner
+from hinataops.ops_mcp.adapters.mysql import MysqlReadonlyAdapter
+from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage
 
 SUPPORTED_WINDOW_MINUTES = frozenset({5, 15, 60})
 
@@ -47,11 +47,10 @@ class MysqlJudgePipelineInspector:
     """
 
     def __init__(
-        self, runner: SshRunner, environment_name: str, mysql_container: str
+        self, environment_name: str, mysql: MysqlReadonlyAdapter
     ) -> None:
-        self._runner = runner
         self._environment_name = environment_name
-        self._mysql_container = mysql_container
+        self._mysql = mysql
 
     async def summary(self, window_minutes: int) -> MysqlJudgePipelineSummary:
         """查询指定窗口内任务状态、Outbox 状态和重试信号。"""
@@ -59,7 +58,7 @@ class MysqlJudgePipelineInspector:
             allowed = ", ".join(str(item) for item in sorted(SUPPORTED_WINDOW_MINUTES))
             raise ValueError(f"window_minutes must be one of: {allowed}")
 
-        output = await self._runner.run(self._mysql_command(window_minutes))
+        output = await self._mysql.execute_trusted_tsv(self._query(window_minutes))
         task_statuses: list[JudgeTaskStatusCount] = []
         outbox_statuses: list[OutboxStatusCount] = []
         for line in output.splitlines():
@@ -95,8 +94,8 @@ class MysqlJudgePipelineInspector:
             outbox_statuses=outbox_statuses,
         )
 
-    def _mysql_command(self, window_minutes: int) -> str:
-        """构造仅含状态聚合的固定 MySQL 命令，不泄露连接密码。"""
+    def _query(self, window_minutes: int) -> str:
+        """构造仅含状态聚合的固定 MySQL 查询。"""
         # kind=1 表示任务聚合、kind=2 表示 Outbox 聚合；用数字而非 SQL 字符串字面量，
         # 使整个命令可以安全包裹在容器内 Shell 的单引号参数中。
         query = (
@@ -113,8 +112,4 @@ class MysqlJudgePipelineInspector:
             f"WHERE created_at >= NOW() - INTERVAL {window_minutes} MINUTE "
             "GROUP BY status"
         )
-        return (
-            f"docker exec {self._mysql_container} sh -lc "
-            "'mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" --batch --raw "
-            f"--skip-column-names --execute \"{query}\" \"$MYSQL_DATABASE\"'"
-        )
+        return query

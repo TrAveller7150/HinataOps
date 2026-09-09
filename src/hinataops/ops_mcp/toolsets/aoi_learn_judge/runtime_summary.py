@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
-from hinataops.config import JudgeStreamConfig
-from hinataops.observation import ObservationMetadata, new_metadata
-from hinataops.redis_observer import JudgeLanguage
-from hinataops.ssh import SshRunner
+from hinataops.ops_mcp.adapters.prometheus import PrometheusReadonlyAdapter
+from hinataops.ops_mcp.config import JudgeStreamConfig
+from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage
 
 
 class JudgeRuntimeSnapshot(BaseModel):
@@ -52,21 +51,19 @@ class PrometheusJudgeRuntimeInspector:
 
     def __init__(
         self,
-        runner: SshRunner,
         environment_name: str,
-        query_container: str,
+        prometheus: PrometheusReadonlyAdapter,
         streams: list[JudgeStreamConfig],
     ) -> None:
-        self._runner = runner
         self._environment_name = environment_name
-        self._query_container = query_container
+        self._prometheus = prometheus
         self._streams = list(streams)
 
     async def summary(self) -> PrometheusJudgeRuntimeSummary:
         """读取受审核指标，并按 Python/SQL Judge 实例归类。"""
         values_by_instance: dict[str, dict[str, float]] = defaultdict(dict)
         responses = self._query_responses(
-            await self._runner.run(self._combined_query_command())
+            await self._prometheus.query_many_fixed(self._QUERIES)
         )
         for response in responses:
             for result in response["data"]["result"]:
@@ -77,22 +74,13 @@ class PrometheusJudgeRuntimeInspector:
                     values_by_instance[instance][metric_name] = float(result["value"][1])
 
         runtimes = [
-            self._runtime_for_stream(stream, values_by_instance.get(stream.prometheus_instance, {}))
+            self._runtime_for_stream(stream, values_by_instance.get(stream.prometheus_target, {}))
             for stream in self._streams
         ]
         return PrometheusJudgeRuntimeSummary(
             metadata=new_metadata(self._environment_name, "prometheus"),
             runtimes=runtimes,
         )
-
-    def _combined_query_command(self) -> str:
-        """将固定 PromQL 复用一条 SSH 会话执行，避免并发连接耗尽观测预算。"""
-        commands = []
-        for query in self._QUERIES:
-            encoded_query = quote(query, safe="")
-            url = f"http://prometheus:9090/api/v1/query?query={encoded_query}"
-            commands.append(f'curl -fsS "{url}"; printf "\\n"')
-        return f"docker exec {self._query_container} sh -lc '{'; '.join(commands)}'"
 
     @staticmethod
     def _query_responses(output: str) -> list[dict]:
@@ -116,7 +104,7 @@ class PrometheusJudgeRuntimeInspector:
         paused = value("aoilearn_judge_expand_paused")
         return JudgeRuntimeSnapshot(
             language=stream.language,
-            instance=stream.prometheus_instance,
+            instance=stream.prometheus_target,
             up=None if up is None else up == 1,
             pool_active=value("aoilearn_judge_pool_active"),
             pool_available=value("aoilearn_judge_pool_available"),

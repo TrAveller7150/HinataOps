@@ -141,6 +141,7 @@ Agent Core 内部采用一个调查图，而不是多个自由对话 Agent。不
 
 ```text
 topology_*
+aoi_judge_*
 prometheus_*
 docker_*
 redis_*
@@ -149,7 +150,7 @@ runbook_*
 deployment_*
 ```
 
-未来只有在部署、权限或故障隔离确实需要时，才拆分为多个 MCP Server。
+Tool 前缀还表达能力层级：`aoi_judge_*` 是 AoiLearn 判题领域 Toolset；`mysql_*`、`redis_*`、`prometheus_*`、`docker_*` 是可供多个已配置环境复用的通用数据源 Toolset。未来只有在部署、权限或故障隔离确实需要时，才拆分为多个 MCP Server。
 
 ### 5.4 Web
 
@@ -198,13 +199,17 @@ HinataOps/
 │       ├── persistence/
 │       └── observability/
 ├── ops_mcp/
-│   ├── tools/
-│   │   ├── prometheus.py
-│   │   ├── docker.py
-│   │   ├── redis.py
-│   │   ├── mysql.py
-│   │   └── runbook.py
-│   └── adapters/
+│   ├── toolsets/
+│   │   ├── aoi_learn_judge/
+│   │   │   ├── redis_summary.py
+│   │   │   ├── mysql_pipeline.py
+│   │   │   └── runtime_summary.py
+│   │   ├── mysql_readonly/
+│   │   ├── redis_readonly/
+│   │   ├── prometheus/
+│   │   └── docker_readonly/
+│   ├── adapters/
+│   └── policy/
 ├── web/
 ├── topologies/
 │   ├── aoi-learn.yml
@@ -232,7 +237,7 @@ API ───────→ Agent/Application ───────→ Domain
 Ops MCP Tools ─────→ Infrastructure Adapters
 ```
 
-Domain 模型不依赖 FastAPI、LangGraph、具体 LLM SDK 或具体数据库客户端。
+Domain 模型不依赖 FastAPI、LangGraph、具体 LLM SDK 或具体数据库客户端。`aoi_learn_judge` 中的表名、Stream 名和指标名属于领域 Toolset，不得伪装为通用 Redis/MySQL/Prometheus 能力；通用 Toolset 则不包含 AoiLearn 业务语义。
 
 ## 7. 调查状态模型
 
@@ -384,6 +389,7 @@ Core 不挂载 Docker Socket，也不持有 MySQL、Redis 和外部平台凭证�
 4. 返回采集时间、目标环境和必要的完整性信息。
 5. 日志与时间序列在 MCP Server 侧聚合和截断。
 6. 错误区分“目标系统异常”和“Tool 自身异常”。
+7. 通用 Tool 还必须绑定已配置实例、最小权限凭证、输入策略和输出预算。
 
 例如：
 
@@ -402,17 +408,29 @@ class RedisStreamInfoResult:
 Redis 好像有积压，建议重启 Judge。
 ```
 
-### 9.3 数据库工具
+### 9.3 双轨 Toolset 策略
 
-第一阶段不向模型开放任意 SQL，而是提供参数化领域查询：
+领域 Toolset 与通用 Toolset 解决不同问题，二者均是正式架构的一部分：
+
+| Toolset | 输入边界 | 输出边界 | 主要用途 |
+| --- | --- | --- | --- |
+| `aoi_learn_judge` | 语言、有限时间窗口等业务参数 | 预定义聚合 Schema | 已知判题流水线根因的快速判别 |
+| `mysql_readonly` | 已配置实例 + 只读 SQL 子集 | 最大行数、超时、脱敏列 | 未知表结构、索引或数据状态的探索 |
+| `redis_readonly` | 已配置实例 + 命令白名单 + Key 前缀策略 | 最大 Key/字段/消息数及分页 | Stream、缓存与结果 Key 的补充检查 |
+| `prometheus` | 已配置实例 + PromQL + 硬超时/标签策略 | 最大序列数、点数和时间范围 | 发现未知指标并验证运行时假设 |
+| `docker_readonly` | 已配置 Docker 环境 + 受审核资源选择器 | 日志行数、时间范围与容器数量 | 容器、事件、日志和资源状态探索 |
+
+领域 Tool 应作为已知故障的首选路径：
 
 ```text
-mysql_get_judge_pipeline_summary
-mysql_get_task_state
-mysql_get_outbox_summary
+aoi_judge_get_pipeline_summary
+aoi_judge_get_task_state
+aoi_judge_get_outbox_summary
 ```
 
-查询实现可以使用 SQLAlchemy Core 或参数化 SQL，但返回 Schema 对 Agent 保持稳定。
+它们提供稳定、紧凑、可测试的 Schema。通用 Tool 只能在 Agent 已记录待验证假设、领域证据不足，或调查对象不属于已有领域 Toolset 时调用。
+
+通用 SQL 不以应用层字符串检查作为唯一防线：目标数据库必须使用专用只读账号，且 Tool 仅接受 `SELECT`、`SHOW`、`DESCRIBE`、`EXPLAIN`、`WITH` 等读取语句。Redis 必须通过 ACL 禁止 `FLUSH*`、`CONFIG`、`DEBUG`、`MONITOR`、`EVAL` 和所有写命令。通用 HTTP 查询同样必须限制主机、路径和方法。所有通用 Tool 调用均应被审计。
 
 ### 9.4 写工具
 
@@ -656,7 +674,8 @@ Bondgumi 环境配置不注册 `action_*` Tool。
 - CrewAI、AutoGen 式多 Agent 角色编排。
 - Temporal 等第二套持久化工作流引擎。
 - Neo4j 或其他图数据库保存小规模服务拓扑。
-- 任意 Shell 执行 Tool。
+- 无白名单、无审批、无资源预算的任意 Shell 执行 Tool。
+- 无最小权限、无语法校验、无输出上限的通用基础设施查询。
 - 每个数据源一个微服务或 MCP Server。
 - Kubernetes、Kafka 或与目标系统不一致的基础设施。
 - 同时接入多个 Agent 可观测性 SaaS。
@@ -679,6 +698,13 @@ Bondgumi 环境配置不注册 `action_*` Tool。
 - 人工审批。
 - `docker_restart_service`。
 - 执行后恢复验证。
+
+### 阶段 2.5：受控通用 Toolset
+
+- 将 P1 的判题查询迁入 `aoi_learn_judge` 领域 Toolset，并采用 `aoi_judge_*` 命名。
+- 实现可配置实例的 `mysql_readonly`、`redis_readonly`、`prometheus` 和 `docker_readonly` Toolset。
+- 为每类通用 Tool 实现最小权限凭证、输入策略、输出预算、审计记录和契约测试。
+- 在 Agent 路由中落实“领域 Tool 优先；证据不足时才使用通用 Tool”的策略。
 
 ### 阶段 3：可视化与评测
 
@@ -705,7 +731,7 @@ Bondgumi 环境配置不注册 `action_*` Tool。
 | MCP 数量 | 第一阶段单 Server | 保留权限边界，同时避免过度拆分 |
 | 数据库 | SQLite | 足够支撑 Demo checkpoint 和事故记录 |
 | 拓扑存储 | YAML | 规模小、可版本控制、便于审查 |
-| 数据库访问 | 参数化领域查询 | 返回稳定、易测试、减少上下文和任意 SQL 风险 |
+| 数据库访问 | 领域查询优先 + 受控只读 SQL Toolset | 已知故障保持稳定 Schema；未知问题可探索，但受只读账号、语法校验和行数上限约束 |
 | 写操作 | 一个明确 Tool | 展示完整闭环，不扩大处置风险 |
 | 前端通信 | REST + SSE | 审批使用 REST，调查进度使用单向事件流 |
 | RAG | 后置 | 实时证据和调查闭环优先于知识库复杂度 |

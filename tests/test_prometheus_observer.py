@@ -1,18 +1,15 @@
 import asyncio
 import json
-from urllib.parse import quote
-
-from hinataops.config import JudgeStreamConfig
-from hinataops.prometheus_observer import PrometheusJudgeRuntimeInspector
+from hinataops.ops_mcp.config import JudgeStreamConfig
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.runtime_summary import PrometheusJudgeRuntimeInspector
 
 
-class FakePrometheusRunner:
+class FakePrometheusAdapter:
     """按固定 PromQL 返回两个 Judge 实例的模拟指标。"""
 
-    async def run(self, command: str) -> str:
+    async def query_many_fixed(self, queries: tuple[str, ...]) -> str:
         responses = []
-        for query in PrometheusJudgeRuntimeInspector._QUERIES:
-            assert quote(query, safe="") in command
+        for query in queries:
             metric_name = "up" if query.startswith("up{") else query
             value = 1 if metric_name == "up" else 4
             responses.append(
@@ -37,16 +34,16 @@ class FakePrometheusRunner:
 def test_prometheus_summary_groups_fixed_metrics_by_judge_instance() -> None:
     result = asyncio.run(
         PrometheusJudgeRuntimeInspector(
-            FakePrometheusRunner(),
             "test",
-            "server",
+            FakePrometheusAdapter(),
             [
                 JudgeStreamConfig(
                     language="python",
                     stream_key="judge-tasks-python",
                     consumer_group="judge-python-workers",
                     judge_service="judge-python",
-                    prometheus_instance="judge-python:8001",
+                    redis_instance_id="aoi-redis",
+                    prometheus_target="judge-python:8001",
                 )
             ],
         ).summary()

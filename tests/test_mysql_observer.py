@@ -2,14 +2,14 @@ import asyncio
 
 import pytest
 
-from hinataops.mysql_observer import MysqlJudgePipelineInspector
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.pipeline_summary import MysqlJudgePipelineInspector
 
 
-class FakeMysqlRunner:
+class FakeMysqlAdapter:
     """为 MySQL 聚合查询测试提供固定的 TSV 返回值。"""
 
-    async def run(self, command: str) -> str:
-        assert "INTERVAL 15 MINUTE" in command
+    async def execute_trusted_tsv(self, statement: str) -> str:
+        assert "INTERVAL 15 MINUTE" in statement
         return "\n".join(
             [
                 "1\tpython\tpending\t2\t120\t0\t0",
@@ -20,7 +20,7 @@ class FakeMysqlRunner:
 
 def test_mysql_summary_parses_task_and_outbox_aggregates() -> None:
     result = asyncio.run(
-        MysqlJudgePipelineInspector(FakeMysqlRunner(), "test", "mysql").summary(15)
+        MysqlJudgePipelineInspector("test", FakeMysqlAdapter()).summary(15)
     )
 
     assert result.task_statuses[0].language == "python"
@@ -32,5 +32,5 @@ def test_mysql_summary_parses_task_and_outbox_aggregates() -> None:
 def test_mysql_summary_rejects_unapproved_time_window() -> None:
     with pytest.raises(ValueError, match="5, 15, 60"):
         asyncio.run(
-            MysqlJudgePipelineInspector(FakeMysqlRunner(), "test", "mysql").summary(30)
+            MysqlJudgePipelineInspector("test", FakeMysqlAdapter()).summary(30)
         )

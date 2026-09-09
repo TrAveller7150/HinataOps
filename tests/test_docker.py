@@ -1,27 +1,28 @@
 import asyncio
 
-from hinataops.config import ServiceConfig
-from hinataops.docker import DockerInspector
+from hinataops.ops_mcp.adapters.docker import DockerContainerRecord
+from hinataops.ops_mcp.config import ServiceConfig
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.container_runtime import DockerInspector
 
 
-class FakeRunner:
-    async def run(self, remote_command: str) -> str:
-        assert remote_command == "docker ps -a --format '{{json .}}'"
-        return "\n".join(
-            [
-                '{"Names":"aoi-learn-server-1","Image":"aoi-learn-server","State":"running","Status":"Up 2 minutes"}',
-                '{"Names":"pool-a","Image":"aoilearn/sandbox:prod","State":"running","Status":"Up 2 minutes"}',
-                '{"Names":"pool-old","Image":"aoilearn/sandbox:prod","State":"exited","Status":"Exited (137)"}',
-                '{"Names":"bondgumi-postgres-dev","Image":"postgres:17-alpine","State":"running","Status":"Up 4 days"}',
-                '{"Names":"old-container","Image":"legacy","State":"exited","Status":"Exited (1)"}',
-            ]
-        )
+class FakeDockerAdapter:
+    """为领域分类测试提供与真实 Docker 适配器一致的最小记录。"""
+
+    async def list_containers(self) -> list[DockerContainerRecord]:
+        return [
+            DockerContainerRecord(name="aoi-learn-server-1", image="aoi-learn-server", state="running", status="Up 2 minutes"),
+            DockerContainerRecord(name="pool-a", image="aoilearn/sandbox:prod", state="running", status="Up 2 minutes"),
+            DockerContainerRecord(name="pool-old", image="aoilearn/sandbox:prod", state="exited", status="Exited (137)"),
+            DockerContainerRecord(name="bondgumi-postgres-dev", image="postgres:17-alpine", state="running", status="Up 4 days"),
+            DockerContainerRecord(name="old-container", image="legacy", state="exited", status="Exited (1)"),
+        ]
 
 
 def test_snapshot_separates_service_sandbox_and_unmanaged_containers() -> None:
     snapshot = asyncio.run(
         DockerInspector(
-            FakeRunner(),
+            "test",
+            FakeDockerAdapter(),
             [
                 ServiceConfig(
                     name="server",
@@ -50,7 +51,8 @@ def test_snapshot_separates_service_sandbox_and_unmanaged_containers() -> None:
 def test_snapshot_marks_absent_configured_service_as_missing() -> None:
     snapshot = asyncio.run(
         DockerInspector(
-            FakeRunner(),
+            "test",
+            FakeDockerAdapter(),
             [
                 ServiceConfig(
                     name="redis",

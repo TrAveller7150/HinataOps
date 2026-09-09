@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from hinataops.ops_mcp.policy import InfrastructureInstanceConfig, InstanceKind, ToolsetConfig
+
 
 class ServiceConfig(BaseModel):
     """HinataOps 被允许观测的单个服务的静态拓扑信息。
@@ -29,10 +31,11 @@ class JudgeStreamConfig(BaseModel):
     """
 
     language: Literal["python", "sql"]
-    stream_key: str
-    consumer_group: str
-    judge_service: str
-    prometheus_instance: str
+    stream_key: str = Field(pattern=r"^[A-Za-z0-9:_-]+$")
+    consumer_group: str = Field(pattern=r"^[A-Za-z0-9:_-]+$")
+    judge_service: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    redis_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    prometheus_target: str = Field(pattern=r"^[A-Za-z0-9:.-]+$")
 
 
 class EnvironmentDetails(BaseModel):
@@ -50,12 +53,23 @@ class EnvironmentDetails(BaseModel):
     command_timeout_seconds: int = Field(default=15, ge=1, le=60)
 
 
+class AoiJudgeToolsetSettings(BaseModel):
+    """AoiLearn 判题领域 Toolset 所依赖的共享实例。"""
+
+    docker_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    mysql_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+    prometheus_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
+
+
 class EnvironmentConfig(BaseModel):
     """一个目标环境已校验的拓扑与连接配置。"""
 
     environment: EnvironmentDetails
     services: list[ServiceConfig]
     judge_streams: list[JudgeStreamConfig]
+    instances: list[InfrastructureInstanceConfig]
+    toolsets: list[ToolsetConfig]
+    aoi_judge: AoiJudgeToolsetSettings
 
     def service(self, name: str) -> ServiceConfig:
         """按名称查找已配置服务；未找到时返回包含可选项的校验错误。"""
@@ -71,6 +85,21 @@ class EnvironmentConfig(BaseModel):
             if stream.language == language:
                 return stream
         raise ValueError(f"Judge stream for language '{language}' is not configured")
+
+    def instance(self, instance_id: str, expected_kind: InstanceKind) -> InfrastructureInstanceConfig:
+        """读取指定类型的受审核实例，阻止 Toolset 错接到不兼容基础设施。"""
+        for instance in self.instances:
+            if instance.id == instance_id:
+                if instance.kind != expected_kind:
+                    raise ValueError(
+                        f"Instance '{instance_id}' is {instance.kind}, expected {expected_kind}"
+                    )
+                return instance
+        raise ValueError(f"Infrastructure instance '{instance_id}' is not configured")
+
+    def toolset_enabled(self, name: str) -> bool:
+        """判断经配置审查的领域 Toolset 是否允许注册。"""
+        return any(toolset.name == name and toolset.enabled for toolset in self.toolsets)
 
 
 def load_environment_config(path: Path | None = None) -> EnvironmentConfig:

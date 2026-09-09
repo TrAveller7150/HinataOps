@@ -213,7 +213,26 @@ action.*
 
 MCP Server 负责连接真实基础设施、执行参数校验、标准化结果并隐藏凭证；HinataOps Core 作为 MCP Client，根据当前调查状态选择 Tool。
 
-### 7.1 第一阶段只读工具
+### 7.1 受控通用 Toolset 与领域 Toolset
+
+HinataOps 同时保留两类只读能力，而不是在“只提供定制查询”和“允许无限制任意查询”之间二选一：
+
+| 类型 | 目的 | 示例 | Agent 使用时机 |
+| --- | --- | --- | --- |
+| 领域 Toolset | 为已知业务流水线返回紧凑、语义明确、可直接对照的证据 | `aoi_judge_get_pipeline_summary`、`aoi_judge_get_stream_summary` | 已知 AoiLearn 判题故障、需要快速建立基线时优先使用 |
+| 通用数据源 Toolset | 探索未知表、指标、Key 或资源，支持未来接入不同项目 | `mysql_readonly_query`、`prometheus_query`、`redis_xinfo_stream` | 领域 Tool 证据不足，且已有明确待验证假设时使用 |
+
+“通用”表示同一 Toolset 能面向多个已配置实例和不同项目复用；不表示把任意 Shell 文本、任意 SQL、任意 Redis 命令或任意网络目标直接交给模型。通用 Toolset 必须满足：
+
+1. 仅选择已配置的 `instance`；凭证、主机和数据库名不由 Tool 参数提供。
+2. 使用基础设施层面的最小权限：数据库账号只读、Redis ACL 禁止写和管理命令、HTTP 仅允许白名单主机/路径/方法。
+3. 对表达式或命令使用语法/命令白名单校验；例如 SQL 仅允许 `SELECT`、`SHOW`、`DESCRIBE`、`EXPLAIN`、`WITH`，Redis 仅允许审核过的读取命令。
+4. 强制超时、分页、最大行数/Key 数/消息数/字节数和时间范围，返回聚合或有界样本。
+5. 记录 Tool 调用审计信息；写操作与通用只读 Toolset 分离注册。
+
+对于 AoiLearn，判题领域 Toolset 应优先于通用 Toolset。一个典型路径是先调用 `aoi_judge_get_pipeline_summary`，仅当它不能解释问题时，再带着具体假设调用受控 PromQL、只读 SQL 或 Redis Stream 查询。
+
+### 7.2 第一阶段只读工具
 
 ```text
 topology_get_service
@@ -232,17 +251,21 @@ redis_consumer_groups
 redis_pending_entries
 redis_get_task_result
 
-mysql_get_judge_pipeline_summary
-mysql_get_task_state
-mysql_get_outbox_summary
+aoi_judge_get_pipeline_summary
+aoi_judge_get_task_state
+aoi_judge_get_outbox_summary
+
+mysql_list_tables
+mysql_describe_table
+mysql_readonly_query
 
 runbook_search
 deployment_get_current_version
 ```
 
-数据库工具优先提供参数化领域查询，而不是让模型生成任意 SQL。这样可以获得稳定、紧凑、可测试的返回结构，也减少模型必须理解的数据库细节。
+当前 P1 已实现的是 AoiLearn 判题领域查询；它们应迁入 `aoi_learn_judge` Toolset。通用 MySQL、Redis、Prometheus 与 Docker Toolset 只在上述权限、输入校验和输出预算全部实现后再注册。这样既保留领域查询的稳定性，也保留未知故障场景所需的探索能力。
 
-### 7.2 第一阶段写工具
+### 7.3 第一阶段写工具
 
 第一版只开放一个实际写操作：
 
