@@ -6,27 +6,6 @@ identity_file = "C:/Users/your-user/.ssh/id_ed25519_hinataops_agent"
 connect_timeout_seconds = 8
 command_timeout_seconds = 15
 
-[[judge_streams]]
-language = "python"
-stream_key = "judge-tasks-python"
-consumer_group = "judge-python-workers"
-judge_service = "judge-python"
-redis_instance_id = "aoi-redis"
-prometheus_target = "judge-python:8001"
-
-[[judge_streams]]
-language = "sql"
-stream_key = "judge-tasks-sql"
-consumer_group = "judge-sql-workers"
-judge_service = "judge-sql"
-redis_instance_id = "aoi-redis"
-prometheus_target = "judge-sql:8002"
-
-[aoi_judge]
-docker_instance_id = "aoi-docker"
-mysql_instance_id = "aoi-mysql"
-prometheus_instance_id = "aoi-prometheus"
-
 [actions]
 # 写操作默认关闭；真实演示前仅为经过故障注入验证的服务显式启用。
 enabled = false
@@ -35,6 +14,27 @@ allowed_services = []
 [[toolsets]]
 name = "aoi_learn_judge"
 enabled = true
+
+[toolset_settings.aoi_learn_judge]
+docker_instance_id = "aoi-docker"
+mysql_instance_id = "aoi-mysql"
+prometheus_instance_id = "aoi-prometheus"
+
+[[toolset_settings.aoi_learn_judge.judge_streams]]
+language = "python"
+stream_key = "judge-tasks-python"
+consumer_group = "judge-python-workers"
+judge_service = "judge-python"
+redis_instance_id = "aoi-redis"
+prometheus_target = "judge-python:8001"
+
+[[toolset_settings.aoi_learn_judge.judge_streams]]
+language = "sql"
+stream_key = "judge-tasks-sql"
+consumer_group = "judge-sql-workers"
+judge_service = "judge-sql"
+redis_instance_id = "aoi-redis"
+prometheus_target = "judge-sql:8002"
 
 [[instances]]
 id = "aoi-docker"

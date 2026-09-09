@@ -15,7 +15,7 @@ HinataOps 是一个面向 AoiLearn 的证据驱动运维 Agent Demo。第一阶�
 `ops_mcp/adapters/` 提供 Docker、Redis、MySQL 与 Prometheus 的实例级只读访问；
 `ops_mcp/toolsets/aoi_learn_judge/` 仅保留判题业务语义；`ops_mcp/policy/` 将输出预算和实例访问入口固定在环境配置中。通用查询 Toolset 尚未开放，因而不存在任意 SQL、Redis 命令、PromQL 或远端命令入口。
 
-本地运行前，将 `config/environments/aoi-local.example.toml` 复制为 `aoi-local.toml`，并填入本机 SSH 私钥路径。实际配置已被 Git 忽略。
+本地运行前，将 `config/environments/aoi-local.example.toml` 复制为 `local.toml`，并填入本机 SSH 私钥路径。实际配置已被 Git 忽略；也可通过 `HINATAOPS_CONFIG` 指定其他环境文件。
 
 ```powershell
 uv sync --all-groups

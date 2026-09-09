@@ -35,10 +35,12 @@ class ActionPlan(BaseModel):
     action_id: UUID = Field(default_factory=uuid4)
     action_type: ActionType
     environment: str
+    # 服务名由计划绑定；执行 MCP Tool 不接受容器名。
     service: str
     reason: str = Field(min_length=1, max_length=2_000)
     risk: str = Field(min_length=1, max_length=2_000)
     rollback: str = Field(min_length=1, max_length=2_000)
+    # 审批前固化，避免执行后替换验证条件。
     verification_checks: list[VerificationCheck] = Field(min_length=1, max_length=10)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -67,6 +69,7 @@ class ApprovalRecord(BaseModel):
     action_id: UUID
     decision: Literal["approved", "rejected"]
     approver: str = Field(min_length=1, max_length=128)
+    # 必须与审批页面展示的不可变计划内容匹配。
     expected_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     comment: str = Field(default="", max_length=2_000)
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

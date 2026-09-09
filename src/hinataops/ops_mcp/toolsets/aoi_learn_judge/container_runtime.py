@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from hinataops.ops_mcp.adapters.docker import DockerReadonlyAdapter
 from hinataops.ops_mcp.config import ServiceConfig
@@ -23,6 +23,7 @@ class ServiceSnapshot(BaseModel):
 
     service: str
     container: str
+    # 容器缺失时为 null，与 state="missing" 共同表达配置与运行时不一致。
     image: str | None
     state: str
     status: str
@@ -37,6 +38,7 @@ class DockerSnapshot(BaseModel):
     sandbox_pool_exited: int
     unmanaged_running: list[ContainerSnapshot]
     unmanaged_exited_count: int
+    # 仅保留固定上限的样本，避免历史容器耗尽 Agent 上下文。
     recent_unmanaged_exited: list[ContainerSnapshot]
 
 

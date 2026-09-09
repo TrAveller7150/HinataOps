@@ -9,6 +9,9 @@ dependencies = [
     "pydantic>=2.12,<3",
 ]
 
+[project.entry-points."hinataops.toolsets"]
+aoi_learn_judge = "hinataops.ops_mcp.toolsets.aoi_learn_judge.plugin:create_plugin"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

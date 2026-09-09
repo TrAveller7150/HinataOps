@@ -1,30 +1,37 @@
-"""动作计划与审批的应用服务。"""
+"""AoiLearn 判题领域的受控重启动作计划服务。"""
 
 from __future__ import annotations
 
 from hinataops.actions.models import ActionPlan, ApprovalRecord, VerificationCheck
 from hinataops.actions.repository import ActionRepository
 from hinataops.ops_mcp.config import EnvironmentConfig
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import AoiJudgeToolsetSettings
 
 
-class ActionService:
-    """将环境允许列表与持久化审批状态机组合为受控处置入口。"""
+class AoiJudgeActionService:
+    """为 AoiLearn 服务生成带领域恢复检查的审批计划。"""
 
-    def __init__(self, config: EnvironmentConfig, repository: ActionRepository) -> None:
-        self._config = config
+    def __init__(
+        self,
+        environment: EnvironmentConfig,
+        settings: AoiJudgeToolsetSettings,
+        repository: ActionRepository,
+    ) -> None:
+        self._environment = environment
+        self._settings = settings
         self._repository = repository
 
     def propose_restart(self, service: str, reason: str, risk: str, rollback: str) -> ActionPlan:
-        """为允许服务创建需人工审批的重启计划，不执行任何基础设施操作。"""
-        if not self._config.actions.enabled:
+        """为允许服务创建需人工审批的重启计划，不执行基础设施操作。"""
+        if not self._environment.actions.enabled:
             raise ValueError("Actions are disabled for this environment")
-        if service not in self._config.actions.allowed_services:
+        if service not in self._environment.actions.allowed_services:
             raise ValueError(f"Service '{service}' is not allowed for restart")
-        self._config.service(service)
+        self._environment.service(service)
         verification_checks = [
             VerificationCheck(name="container_running", description="目标容器重启后处于 running 状态")
         ]
-        if any(stream.judge_service == service for stream in self._config.judge_streams):
+        if any(stream.judge_service == service for stream in self._settings.judge_streams):
             verification_checks.append(
                 VerificationCheck(
                     name="judge_reachable",
@@ -33,7 +40,7 @@ class ActionService:
             )
         plan = ActionPlan(
             action_type="docker_restart_service",
-            environment=self._config.environment.name,
+            environment=self._environment.environment.name,
             service=service,
             reason=reason,
             risk=risk,

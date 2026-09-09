@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from hinataops.ops_mcp.adapters.ssh import SshRunner
 from hinataops.ops_mcp.policy import InfrastructureInstanceConfig
@@ -15,6 +15,7 @@ class RestartExecutionResult(BaseModel):
 
     container: str
     state: str
+    # Docker 未返回启动时间时保留为 null，而不是伪造时间。
     started_at: str | None = None
 
 

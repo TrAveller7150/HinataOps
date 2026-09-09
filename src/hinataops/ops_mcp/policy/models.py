@@ -27,6 +27,7 @@ class InfrastructureInstanceConfig(BaseModel):
 
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
     kind: InstanceKind
+    # MySQL、Redis 的固定访问入口；不得来自 MCP Tool 参数。
     container: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     access_container: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -46,5 +47,5 @@ class InfrastructureInstanceConfig(BaseModel):
 class ToolsetConfig(BaseModel):
     """一个领域 Toolset 的启用开关，避免未审核能力意外暴露为 MCP Tool。"""
 
-    name: Literal["aoi_learn_judge"]
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,63}$")
     enabled: bool = True

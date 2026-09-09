@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 from hinataops.ops_mcp.policy import InfrastructureInstanceConfig, InstanceKind, ToolsetConfig
@@ -18,24 +16,10 @@ class ServiceConfig(BaseModel):
     """
 
     name: str
+    # 逻辑服务名称与实际 Docker 容器名分离，避免调用方直接指定容器。
     container: str
     depends_on: list[str] = Field(default_factory=list)
     role: str
-
-
-class JudgeStreamConfig(BaseModel):
-    """一种判题语言对应的受审核 Redis Stream 与 Worker 映射。
-
-    将 Stream、Consumer Group 和 Prometheus 实例固定在环境配置中，避免 Tool 调用方
-    传入任意 Redis 键名或监控目标。
-    """
-
-    language: Literal["python", "sql"]
-    stream_key: str = Field(pattern=r"^[A-Za-z0-9:_-]+$")
-    consumer_group: str = Field(pattern=r"^[A-Za-z0-9:_-]+$")
-    judge_service: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
-    redis_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
-    prometheus_target: str = Field(pattern=r"^[A-Za-z0-9:.-]+$")
 
 
 class EnvironmentDetails(BaseModel):
@@ -48,23 +32,17 @@ class EnvironmentDetails(BaseModel):
     name: str
     host: str
     user: str
+    # 私钥仅保留在被忽略的本机环境文件中。
     identity_file: Path
     connect_timeout_seconds: int = Field(default=8, ge=1, le=60)
     command_timeout_seconds: int = Field(default=15, ge=1, le=60)
-
-
-class AoiJudgeToolsetSettings(BaseModel):
-    """AoiLearn 判题领域 Toolset 所依赖的共享实例。"""
-
-    docker_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
-    mysql_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
-    prometheus_instance_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")
 
 
 class ActionSettings(BaseModel):
     """一个环境中允许注册的写操作及其服务级最小权限范围。"""
 
     enabled: bool = False
+    # 白名单使用逻辑服务名，而不是可由调用方替换的 Docker 容器名。
     allowed_services: list[str] = Field(default_factory=list)
 
 
@@ -73,10 +51,10 @@ class EnvironmentConfig(BaseModel):
 
     environment: EnvironmentDetails
     services: list[ServiceConfig]
-    judge_streams: list[JudgeStreamConfig]
     instances: list[InfrastructureInstanceConfig]
     toolsets: list[ToolsetConfig]
-    aoi_judge: AoiJudgeToolsetSettings
+    # Core 不解释该配置；仅由同名 Plugin 校验和消费。
+    toolset_settings: dict[str, dict[str, object]] = Field(default_factory=dict)
     actions: ActionSettings = Field(default_factory=ActionSettings)
 
     def service(self, name: str) -> ServiceConfig:
@@ -86,13 +64,6 @@ class EnvironmentConfig(BaseModel):
                 return service
         available = ", ".join(item.name for item in self.services)
         raise ValueError(f"Unknown service '{name}'. Available services: {available}")
-
-    def judge_stream(self, language: Literal["python", "sql"]) -> JudgeStreamConfig:
-        """按语言查找已配置的判题 Stream；未配置时返回可行动的校验错误。"""
-        for stream in self.judge_streams:
-            if stream.language == language:
-                return stream
-        raise ValueError(f"Judge stream for language '{language}' is not configured")
 
     def instance(self, instance_id: str, expected_kind: InstanceKind) -> InfrastructureInstanceConfig:
         """读取指定类型的受审核实例，阻止 Toolset 错接到不兼容基础设施。"""
@@ -109,12 +80,19 @@ class EnvironmentConfig(BaseModel):
         """判断经配置审查的领域 Toolset 是否允许注册。"""
         return any(toolset.name == name and toolset.enabled for toolset in self.toolsets)
 
+    def toolset_config(self, name: str) -> dict[str, object]:
+        """返回指定 Plugin 的原始专属配置，由 Plugin 自行校验其领域模型。"""
+        try:
+            return self.toolset_settings[name]
+        except KeyError as error:
+            raise ValueError(f"Toolset '{name}' is missing its configuration") from error
+
 
 def load_environment_config(path: Path | None = None) -> EnvironmentConfig:
     """加载显式指定或由 ``HINATAOPS_CONFIG`` 选定的本地环境配置。"""
     # 默认配置文件被刻意忽略，使同一份源码能保留脱敏模板，而每位开发者使用自己的私钥路径。
     configured_path = path or Path(
-        os.environ.get("HINATAOPS_CONFIG", "config/environments/aoi-local.toml")
+        os.environ.get("HINATAOPS_CONFIG", "config/environments/local.toml")
     )
     with configured_path.open("rb") as file:
         return EnvironmentConfig.model_validate(tomllib.load(file))

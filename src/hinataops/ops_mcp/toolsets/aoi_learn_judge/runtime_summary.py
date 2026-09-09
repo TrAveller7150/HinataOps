@@ -6,8 +6,8 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from hinataops.ops_mcp.adapters.prometheus import PrometheusReadonlyAdapter
-from hinataops.ops_mcp.config import JudgeStreamConfig
 from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import JudgeStreamConfig
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage
 
 

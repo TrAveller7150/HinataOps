@@ -6,8 +6,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from hinataops.ops_mcp.adapters.redis import RedisReadonlyAdapter
-from hinataops.ops_mcp.config import JudgeStreamConfig
 from hinataops.ops_mcp.contracts import ObservationMetadata, new_metadata
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import JudgeStreamConfig
 
 JudgeLanguage = Literal["python", "sql"]
 
@@ -56,7 +56,6 @@ class RedisStreamInspector:
         """采集一种语言的历史长度、Group lag 与 pending 状态。"""
         stream = self._stream(language)
         groups_raw = await self._redis.xinfo_groups(stream.stream_key)
-        pending_raw = await self._redis.xpending(stream.stream_key, stream.consumer_group)
         length_raw = await self._redis.xlen(stream.stream_key)
 
         groups = json.loads(groups_raw)
@@ -69,6 +68,9 @@ class RedisStreamInspector:
             # Group 缺失是目标系统的重要状态，不应被伪装成 Tool 的解析失败。
             warnings.append(f"未找到 Consumer Group: {stream.consumer_group}")
         else:
+            # Redis 在 Group 不存在时会对 XPENDING 返回 NOGROUP。必须先判定 Group，
+            # 才能把这一目标系统状态以完整观测结果而不是 Tool 失败返回给 Agent。
+            pending_raw = await self._redis.xpending(stream.stream_key, stream.consumer_group)
             pending = json.loads(pending_raw)
             consumer_group = ConsumerGroupSnapshot(
                 name=stream.consumer_group,

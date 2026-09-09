@@ -1,6 +1,6 @@
 import asyncio
 import json
-from hinataops.ops_mcp.config import JudgeStreamConfig
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import JudgeStreamConfig
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.runtime_summary import PrometheusJudgeRuntimeInspector
 
 

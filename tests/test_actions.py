@@ -5,19 +5,23 @@ import pytest
 
 from hinataops.actions.models import ApprovalRecord, VerificationResult
 from hinataops.actions.repository import ActionRepository, InvalidActionStateError
-from hinataops.actions.service import ActionService
 from hinataops.ops_mcp.config import ActionSettings, load_environment_config
 from hinataops.ops_mcp.server import create_server
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.action_service import AoiJudgeActionService
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import AoiJudgeToolsetSettings
 
 
-def _service(tmp_path: Path) -> tuple[ActionService, ActionRepository]:
+def _service(tmp_path: Path) -> tuple[AoiJudgeActionService, ActionRepository]:
     """构造仅允许重启 Python Judge 的临时审批环境。"""
     config = load_environment_config(Path("config/environments/aoi-local.example.toml"))
     enabled_config = config.model_copy(
         update={"actions": ActionSettings(enabled=True, allowed_services=["judge-python"])}
     )
     repository = ActionRepository(tmp_path / "state.sqlite3")
-    return ActionService(enabled_config, repository), repository
+    settings = AoiJudgeToolsetSettings.model_validate(
+        enabled_config.toolset_config("aoi_learn_judge")
+    )
+    return AoiJudgeActionService(enabled_config, settings, repository), repository
 
 
 def test_approval_binds_the_exact_action_plan_and_allows_one_execution_claim(tmp_path: Path) -> None:
