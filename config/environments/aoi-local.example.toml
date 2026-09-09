@@ -1,0 +1,105 @@
+[environment]
+name = "aoi-local"
+host = "192.168.31.17"
+user = "traveller7150"
+identity_file = "C:/Users/your-user/.ssh/id_ed25519_hinataops_agent"
+connect_timeout_seconds = 8
+command_timeout_seconds = 15
+
+[[judge_streams]]
+language = "python"
+stream_key = "judge-tasks-python"
+consumer_group = "judge-python-workers"
+judge_service = "judge-python"
+prometheus_instance = "judge-python:8001"
+
+[[judge_streams]]
+language = "sql"
+stream_key = "judge-tasks-sql"
+consumer_group = "judge-sql-workers"
+judge_service = "judge-sql"
+prometheus_instance = "judge-sql:8002"
+
+[[services]]
+name = "nginx"
+container = "aoi-learn-nginx-1"
+depends_on = ["server"]
+role = "HTTP entry point and reverse proxy"
+
+[[services]]
+name = "server"
+container = "aoi-learn-server-1"
+depends_on = ["mysql", "redis"]
+role = "Spring Boot application and judge result persistence"
+
+[[services]]
+name = "judge-python"
+container = "aoi-learn-judge-python-1"
+depends_on = ["redis"]
+role = "Python judge stream consumer and sandbox-pool manager"
+
+[[services]]
+name = "judge-sql"
+container = "aoi-learn-judge-sql-1"
+depends_on = ["redis"]
+role = "SQL judge stream consumer and sandbox-pool manager"
+
+[[services]]
+name = "mysql"
+container = "aoi-learn-mysql-1"
+depends_on = []
+role = "Application persistence and transactional judge outbox"
+
+[[services]]
+name = "redis"
+container = "aoi-learn-redis-1"
+depends_on = []
+role = "Judge task/result streams and cache"
+
+[[services]]
+name = "prometheus"
+container = "aoi-learn-prometheus-1"
+depends_on = []
+role = "Metrics collection and query endpoint"
+
+[[services]]
+name = "grafana"
+container = "aoi-learn-grafana-1"
+depends_on = ["prometheus"]
+role = "Metrics dashboards"
+
+[[services]]
+name = "cadvisor"
+container = "aoi-learn-cadvisor-1"
+depends_on = []
+role = "Container resource metrics exporter"
+
+[[services]]
+name = "node-exporter"
+container = "aoi-learn-node-exporter-1"
+depends_on = []
+role = "Host resource metrics exporter"
+
+[[services]]
+name = "minio"
+container = "aoi-learn-minio-1"
+depends_on = []
+role = "Object storage"
+
+[[services]]
+name = "qdrant"
+container = "aoi-learn-qdrant-1"
+depends_on = []
+role = "Vector storage used by the teaching assistant"
+
+[[services]]
+name = "agent"
+container = "aoi-learn-agent-1"
+depends_on = ["qdrant"]
+role = "Teaching assistant service"
+
+[[services]]
+name = "dozzle"
+container = "aoi-learn-dozzle-1"
+depends_on = []
+role = "Container log viewer"
