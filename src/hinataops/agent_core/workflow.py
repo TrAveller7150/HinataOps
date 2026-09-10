@@ -12,7 +12,7 @@ from typing_extensions import TypedDict
 from hinataops.agent_core.evidence import EvidenceCollector
 from hinataops.agent_core.gateway import ToolCatalog, ToolGateway, ToolGatewayError
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
-from hinataops.agent_core.planner import InvestigationPlanner, PlanningContext
+from hinataops.agent_core.planner import InvestigationPlanner, PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget, InvestigationPolicyError
 
 
@@ -122,15 +122,18 @@ class InvestigationWorkflow:
             return {"stop_reason": "已达到调查轮次预算"}
         if len(state["completed_calls"]) >= self._budget.max_tool_calls:
             return {"stop_reason": "已达到 Tool 调用次数预算"}
-        decision = await self._planner.decide(
-            PlanningContext(
-                incident=state["incident"],
-                catalog=catalog,
-                observations=state["observations"],
-                completed_calls=state["completed_calls"],
-                investigation_round=state["investigation_rounds"] + 1,
+        try:
+            decision = await self._planner.decide(
+                PlanningContext(
+                    incident=state["incident"],
+                    catalog=catalog,
+                    observations=state["observations"],
+                    completed_calls=state["completed_calls"],
+                    investigation_round=state["investigation_rounds"] + 1,
+                )
             )
-        )
+        except PlannerError as error:
+            return {"stop_reason": f"Planner 输出不可用: {error}"}
         if not decision.tool_calls:
             return {"stop_reason": decision.finish_reason}
         return {"planned_calls": decision.tool_calls}

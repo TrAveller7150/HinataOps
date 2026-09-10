@@ -524,7 +524,10 @@ class InvestigationDecision:
     explanation: str
 ```
 
-结构化输出失败时最多进行一次格式修复；再次失败则记录模型错误并进入可解释的失败或降级路径。
+当前实现要求模型通过严格 JSON Schema 返回决策。动态 Tool 参数以 JSON 字符串字段返回，
+由 Core 解析后再转为 `ToolCall`；这避免严格 Schema 将任意参数键误当成受信任结构。输出校验、
+参数解析或 Tool 白名单检查失败时，工作流记录可解释的 Planner 错误并安全结束，不执行 MCP Tool。
+格式修复重试将在具备模型调用可观测性后再评估，避免为 Demo 增加隐藏的二次模型调用。
 
 ### 10.3 Prompt 上下文
 

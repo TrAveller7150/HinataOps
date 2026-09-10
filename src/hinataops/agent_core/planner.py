@@ -11,6 +11,10 @@ from hinataops.agent_core.gateway import ToolCatalog
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 
 
+class PlannerError(RuntimeError):
+    """Planner 无法生成可执行的受限调查决策时抛出。"""
+
+
 class PlanningDecision(BaseModel):
     """Planner 一轮的受限输出：选择有限 Tool，或明确结束调查。"""
 

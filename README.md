@@ -50,4 +50,11 @@ allowed_services = ["judge-python"]
 
 `agent_core/` 已接入 LangGraph 的最小调查循环：加载当前 MCP Tool Catalog、由 Planner 选择下一轮只读检查、由确定性策略校验白名单/重复调用/轮次和总调用预算、并发采集证据，再决定继续或结束。
 
-当前使用可脚本化 Planner 验证编排边界，尚未接入 LLM（P3.4）或写 Tool。每次运行均保留已完成调用、结构化 Observation 和明确的停止原因；拒绝的调用不会到达 MCP Server。
+可脚本化 Planner 用于验证编排边界；P3.4 已在下一节提供 LLM 实现。每次运行均保留已完成调用、结构化 Observation 和明确的停止原因；拒绝的调用不会到达 MCP Server。
+
+## P3.4：结构化 LLM Planner
+
+`LlmInvestigationPlanner` 通过独立的 `StructuredOutputClient` 端口调用模型；当前提供
+`OpenAICompatibleStructuredOutputClient` 实现，可在构造时显式传入模型名、API Key 和兼容 API 的 `base_url`。调查图仍只依赖 `InvestigationPlanner`，不依赖具体模型 SDK。
+
+模型只能看到事故、已采集证据和经白名单筛选的只读 Tool 描述。它通过严格 JSON Schema 返回检查建议；动态 Tool 参数以 `arguments_json` 字符串返回，Core 解析为 `ToolCall` 后仍会校验 Tool Catalog、重复调用和预算。模型输出不合法或选择未授权 Tool 时，工作流安全结束，不会调用 MCP Tool。

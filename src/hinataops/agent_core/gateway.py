@@ -68,6 +68,11 @@ class ToolCatalog:
         """返回不可变名称集合，供调查预算构造只读白名单。"""
         return frozenset(self._tools)
 
+    @property
+    def tools(self) -> tuple[ToolDescriptor, ...]:
+        """按名称稳定排序的 Tool 描述，供 Planner 组装最小上下文。"""
+        return tuple(self._tools[name] for name in sorted(self._tools))
+
 
 class StreamableHttpToolGateway:
     """通过 Streamable HTTP 与独立 Ops MCP Server 通信的生产 Gateway。"""
