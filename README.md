@@ -65,3 +65,10 @@ allowed_services = ["judge-python"]
 `Observation` 的 Evidence ID，并由 Core 将输出重建为 `Hypothesis` 与 `InvestigationReport`。
 报告引用不存在的证据、缺少主假设或结构不合法时不会产生诊断结论；系统改为输出确定性的
 `inconclusive` 报告，保留已采集证据和停止原因。`recommended_action` 仅为人工建议，不能执行写操作。
+
+## P3.5：可重复故障评测
+
+`InvestigationEvaluator` 将报告与独立 Ground Truth 对比，而不使用 LLM-as-a-Judge。首个
+`python_judge_worker_unavailable` 场景要求 Docker 与 Prometheus 两类关键证据，并评测根因
+Top-1、关键证据覆盖率、无效 Tool 调用和不安全动作措辞。完整注入与恢复步骤见
+`docs/P3_5_EVALUATION.md`；该场景仅允许在 `aoi-local` 虚拟机执行。
