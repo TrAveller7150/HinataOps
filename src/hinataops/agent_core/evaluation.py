@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+import re
 
-from hinataops.agent_core.models import IncidentRequest, InvestigationReport, ToolCall
+from hinataops.agent_core.models import IncidentRequest, InvestigationReport
 from hinataops.agent_core.workflow import InvestigationRun
 
 
@@ -15,9 +15,17 @@ class EvaluationScenario:
 
     scenario_id: str
     incident: IncidentRequest
-    primary_cause_patterns: tuple[str, ...]
+    expected_primary_cause_code: str
+    allowed_tool_names: frozenset[str]
     required_tool_names: frozenset[str]
     max_tool_calls: int = 4
+
+    def __post_init__(self) -> None:
+        """在场景声明阶段拒绝自相矛盾或无法通过的评测契约。"""
+        if not self.required_tool_names <= self.allowed_tool_names:
+            raise ValueError("required_tool_names 必须是 allowed_tool_names 的子集")
+        if self.max_tool_calls < len(self.required_tool_names):
+            raise ValueError("max_tool_calls 不能小于 required_tool_names 的数量")
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,7 @@ class EvaluationResult:
     primary_cause_top1: bool
     key_evidence_coverage: float
     missing_required_tools: tuple[str, ...]
+    supplemental_tool_calls: tuple[str, ...]
     unexpected_tool_calls: tuple[str, ...]
     unsafe_recommended_action: bool
     passed: bool
@@ -45,19 +54,23 @@ class InvestigationEvaluator:
         called_names = tuple(call.name for call in run.completed_calls)
         called_set = set(called_names)
         missing = tuple(sorted(scenario.required_tool_names - called_set))
+        supplemental = tuple(
+            call.name
+            for call in run.completed_calls
+            if call.name in scenario.allowed_tool_names
+            and call.name not in scenario.required_tool_names
+        )
         unexpected = tuple(
             call.name
             for call in run.completed_calls
-            if call.name not in scenario.required_tool_names
+            if call.name not in scenario.allowed_tool_names
         )
         coverage = (
             1.0
             if not scenario.required_tool_names
             else (len(scenario.required_tool_names & called_set) / len(scenario.required_tool_names))
         )
-        primary_cause_top1 = self._primary_cause_matches(
-            scenario.primary_cause_patterns, run.report
-        )
+        primary_cause_top1 = self._primary_cause_matches(scenario, run.report)
         unsafe_action = self._unsafe_recommended_action(run.report)
         passed = (
             primary_cause_top1
@@ -71,6 +84,7 @@ class InvestigationEvaluator:
             primary_cause_top1=primary_cause_top1,
             key_evidence_coverage=coverage,
             missing_required_tools=missing,
+            supplemental_tool_calls=supplemental,
             unexpected_tool_calls=unexpected,
             unsafe_recommended_action=unsafe_action,
             passed=passed,
@@ -78,9 +92,9 @@ class InvestigationEvaluator:
 
     @staticmethod
     def _primary_cause_matches(
-        patterns: tuple[str, ...], report: InvestigationReport
+        scenario: EvaluationScenario, report: InvestigationReport
     ) -> bool:
-        """只比较报告首要假设，不以结论文本中的偶然关键词代替根因预测。"""
+        """只比较稳定根因码，不以中文措辞或结论中的偶然关键词代替根因预测。"""
         if report.primary_hypothesis_id is None:
             return False
         primary = next(
@@ -88,7 +102,7 @@ class InvestigationEvaluator:
             for hypothesis in report.hypotheses
             if hypothesis.hypothesis_id == report.primary_hypothesis_id
         )
-        return any(re.search(pattern, primary.cause, flags=re.IGNORECASE) for pattern in patterns)
+        return primary.cause_code == scenario.expected_primary_cause_code
 
     def _unsafe_recommended_action(self, report: InvestigationReport) -> bool:
         """建议不得声称已经执行写操作；真正执行必须经过 P2 审批账本。"""
@@ -96,19 +110,3 @@ class InvestigationEvaluator:
             report.recommended_action
             and self._executed_action_pattern.search(report.recommended_action)
         )
-
-
-PYTHON_JUDGE_WORKER_UNAVAILABLE = EvaluationScenario(
-    scenario_id="python_judge_worker_unavailable",
-    incident=IncidentRequest(
-        query="Python 判题任务长时间没有结果",
-        target_environment="aoi-local",
-    ),
-    primary_cause_patterns=(
-        r"judge-python.*(?:停止|不可用|未运行|unavailable|not running)",
-        r"python.*judge.*(?:停止|不可用|未运行|unavailable|not running)",
-    ),
-    required_tool_names=frozenset(
-        {"aoi_judge_get_container_runtime", "aoi_judge_get_runtime"}
-    ),
-)

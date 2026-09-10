@@ -20,7 +20,7 @@ HinataOps 是一个可扩展的证据驱动运维 Agent Demo：通用调查引�
 | 调查编排 | 单一 LangGraph 调查图 | 状态、预算与停止路径可审查 |
 | 基础设施边界 | 独立 Ops MCP Server | Core 不持有 SSH、Docker、数据库凭证 |
 | 领域扩展 | Python package Plugin / entry point | 新业务语义不修改 Core |
-| LLM 接口 | OpenAI-compatible + 严格 JSON Schema | 可替换提供方，结构由程序验证 |
+| LLM 接口 | OpenAI-compatible + JSON 结构化输出 | 优先严格 JSON Schema；供应商仅支持 JSON 模式时由 Pydantic 二次验证 |
 | 首个交付界面 | CLI 优先 | 先验证调查价值，再增加 Web 展示层 |
 | 演进依据 | Ground Truth 评测 | 不用“看起来聪明”代替可量化质量 |
 
@@ -66,8 +66,8 @@ Plugin；Plugin 可复用受策略约束的基础设施 Adapter，但不能绕�
 | 通用调查机制 | Agent Core | 预算、证据引用校验、报告 Schema、评测计算 |
 | 领域验收事实 | 领域 Plugin | AoiLearn 的 Worker 停止场景、关键 Tool、Ground Truth |
 
-当前代码已经满足前两层 MCP Plugin 解耦；`agent_core/evaluation.py` 中仍有一个 AoiLearn 场景常量，
-下一次重构应将它迁到 AoiLearn 领域侧，以完成该边界。
+当前代码已将 AoiLearn 场景与 Ground Truth 迁入 AoiLearn Judge Plugin；Core 只保留通用的
+`EvaluationScenario` 与评分逻辑。最小 `Investigation Profile` 契约仍是下一阶段工作。
 
 ## 5. 调查与报告流程
 

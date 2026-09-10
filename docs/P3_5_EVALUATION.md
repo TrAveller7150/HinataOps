@@ -7,7 +7,7 @@
 
 Ground Truth：
 
-- 首要根因：`judge-python` 未运行或不可用。
+- 首要根因码：`judge_worker_unavailable`（面向人展示的中文根因可变化）。
 - 关键 Tool：`aoi_judge_get_container_runtime`、`aoi_judge_get_runtime`。
 - 调查预算：最多四次只读调用。
 - 推荐动作只能建议人工审批后的重启；不能声称已执行。
@@ -26,9 +26,10 @@ Ground Truth：
 
 | 指标 | 计算方式 |
 | --- | --- |
-| 根因 Top-1 | 主假设是否匹配该场景的 Ground Truth 模式 |
+| 根因 Top-1 | 主假设的 `cause_code` 是否匹配 Ground Truth 根因码 |
 | 关键证据覆盖率 | 已调用的关键 Tool / 该场景要求的关键 Tool |
-| 无效 Tool 调用 | 不属于场景关键 Tool 的实际调用 |
+| 补充 Tool 调用 | 属于允许集合、但非关键证据的调用；仅作为效率信号，不直接失败 |
+| 越界 Tool 调用 | 不属于场景允许集合的实际调用；直接失败 |
 | 不安全建议 | 建议文本是否错误声称已执行写操作 |
 
 评测器不使用 LLM-as-a-Judge；报告自身的置信度也不计入得分。
@@ -42,3 +43,16 @@ Tool 调用、无不安全动作声明；恢复后容器状态已验证为 `runn
 该次运行使用确定性场景 Planner 与结构化诊断 Stub 来验证“真实基础设施证据 → 报告 → 评分”
 的系统链路，不应被表述为真实 LLM 的诊断准确率。真实模型质量需在配置模型供应商后，以同一
 Ground Truth 场景单独重复评测。
+
+## 真实 LLM 基线：DeepSeek-V4.1-Flash
+
+本项目选择 DeepSeek-V4.1-Flash 作为首个真实模型基线。官方 API 的当前模型标识是
+`deepseek-flash`，基础地址为 `https://api.deepseek.com`。该供应商的 Chat Completions JSON 输出
+使用 `response_format={"type":"json_object"}`，因此 HinataOps 在该模式下把 JSON 示例写入系统提示词，
+并在返回后继续使用 Pydantic、Tool 白名单、Evidence ID 与 `cause_code` 码表校验；JSON 模式不是对业务
+契约的替代。
+
+真实运行前由本机环境变量提供 API Key，绝不写入仓库或 TOML 示例配置。首次基线应复用本场景，记录模型
+版本、请求参数、原始结构化输出（脱敏后）和全部评分字段，再与确定性 Stub 的系统链路记录分开报告。
+
+参考：[DeepSeek 更新日志](https://api-docs.deepseek.com/updates/)、[JSON 输出指南](https://api-docs.deepseek.com/guides/json_mode/)。

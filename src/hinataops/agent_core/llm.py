@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -88,11 +88,12 @@ class StructuredOutputClient(Protocol):
         user_prompt: str,
         schema_name: str,
         schema: dict[str, object],
+        json_example: str,
     ) -> dict[str, object]: ...
 
 
 class OpenAICompatibleStructuredOutputClient:
-    """使用 Chat Completions JSON Schema 输出的 OpenAI-compatible 传输实现。"""
+    """适配 Chat Completions 的结构化输出，支持严格 Schema 与 JSON Object 模式。"""
 
     def __init__(
         self,
@@ -100,9 +101,16 @@ class OpenAICompatibleStructuredOutputClient:
         model: str,
         api_key: str | None = None,
         base_url: str | None = None,
+        response_format_mode: Literal["json_schema", "json_object"] = "json_schema",
+        max_tokens: int = 2_000,
+        client: AsyncOpenAI | None = None,
     ) -> None:
+        if max_tokens < 1:
+            raise ValueError("max_tokens 必须大于 0")
         self._model = model
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._response_format_mode = response_format_mode
+        self._max_tokens = max_tokens
 
     async def create_json(
         self,
@@ -111,24 +119,36 @@ class OpenAICompatibleStructuredOutputClient:
         user_prompt: str,
         schema_name: str,
         schema: dict[str, object],
+        json_example: str,
     ) -> dict[str, object]:
-        """请求严格 JSON Schema；网络和模型错误统一转换为 PlannerError。"""
+        """请求 JSON 输出；严格 Schema 不可用时仍由 Core 执行 Pydantic 校验。"""
+        response_format: dict[str, object]
+        formatted_system_prompt = system_prompt
+        if self._response_format_mode == "json_schema":
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+        else:
+            response_format = {"type": "json_object"}
+            formatted_system_prompt += (
+                "\n必须只返回 JSON 对象，不要 Markdown 或额外文字。"
+                f"输出格式示例：{json_example}"
+            )
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": formatted_system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_name,
-                        "strict": True,
-                        "schema": schema,
-                    },
-                },
+                response_format=response_format,
                 temperature=0,
+                max_tokens=self._max_tokens,
             )
         except Exception as error:
             raise PlannerError(f"LLM 请求失败: {type(error).__name__}") from error
@@ -181,6 +201,7 @@ class LlmInvestigationPlanner(InvestigationPlanner):
                 user_prompt=self._render_context(context, allowed_tools),
                 schema_name="investigation_decision",
                 schema=ModelPlanningDecision.model_json_schema(),
+                json_example='{"tool_calls":[],"finish_reason":"证据已足够"}',
             )
             decision = ModelPlanningDecision.model_validate(raw_decision).to_planning_decision()
         except (ValidationError, TypeError) as error:
@@ -214,6 +235,9 @@ class ModelHypothesis(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    cause_code: str | None = Field(
+        description="稳定根因码（`cause_code`）；由领域场景定义，未知时为 null"
+    )
     cause: str = Field(
         min_length=1, max_length=1_000, description="候选根因的简明中文表述"
     )
@@ -267,23 +291,37 @@ class LlmInvestigationDiagnostician(InvestigationDiagnostician):
     _system_prompt = """你是运维调查诊断器。只能依据本次提供的观测证据（`Observation`）形成根因假设和诊断报告。
 支持证据 ID（`supporting_evidence_ids`）与反驳证据 ID（`contradicting_evidence_ids`）必须逐字引用上下文中已有的证据 ID。
 证据不足时必须返回 `inconclusive`；不得虚构根因、日志、指标，也不得执行任何操作。
-根因、待补充事实、结论和人工建议必须使用简体中文。`recommended_action` 只能是人工建议，不能声称已执行重启、扩容或其他写操作。"""
+根因、待补充事实、结论和人工建议必须使用简体中文。`cause_code` 是稳定英文下划线根因码；未知时为 null，不能翻译。
+`recommended_action` 只能是人工建议，不能声称已执行重启、扩容或其他写操作。"""
 
-    def __init__(self, client: StructuredOutputClient) -> None:
+    def __init__(
+        self,
+        client: StructuredOutputClient,
+        *,
+        allowed_cause_codes: frozenset[str] = frozenset(),
+    ) -> None:
         self._client = client
+        self._allowed_cause_codes = allowed_cause_codes
 
     async def diagnose(self, context: DiagnosisContext) -> InvestigationReport:
         """请求严格模型输出，再由领域模型验证所有证据引用。"""
         try:
             raw_diagnosis = await self._client.create_json(
-                system_prompt=self._system_prompt,
+                system_prompt=self._render_system_prompt(),
                 user_prompt=self._render_context(context),
                 schema_name="investigation_report",
                 schema=ModelDiagnosis.model_json_schema(),
+                json_example=(
+                    '{"status":"inconclusive","hypotheses":[],'
+                    '"primary_hypothesis_index":null,"conclusion":"证据不足",'
+                    '"recommended_action":null}'
+                ),
             )
             diagnosis = ModelDiagnosis.model_validate(raw_diagnosis)
+            self._validate_cause_codes(diagnosis)
             hypotheses = [
                 Hypothesis(
+                    cause_code=hypothesis.cause_code,
                     cause=hypothesis.cause,
                     confidence=hypothesis.confidence,
                     supporting_evidence_ids=hypothesis.supporting_evidence_ids,
@@ -308,6 +346,28 @@ class LlmInvestigationDiagnostician(InvestigationDiagnostician):
             )
         except (PlannerError, ValidationError, TypeError, ValueError) as error:
             raise DiagnosisError("LLM 结构化输出不符合诊断报告契约") from error
+
+    def _render_system_prompt(self) -> str:
+        """仅在评测或领域 Profile 给出码表时约束模型的稳定根因码。"""
+        if not self._allowed_cause_codes:
+            return self._system_prompt
+        codes = "、".join(sorted(self._allowed_cause_codes))
+        return f"{self._system_prompt}\n本次只允许使用以下 `cause_code`：{codes}。"
+
+    def _validate_cause_codes(self, diagnosis: ModelDiagnosis) -> None:
+        """诊断结论必须有根因码；评测码表存在时拒绝模型自造的枚举值。"""
+        if diagnosis.status != "diagnosed":
+            return
+        assert diagnosis.primary_hypothesis_index is not None
+        primary = diagnosis.hypotheses[diagnosis.primary_hypothesis_index]
+        if primary.cause_code is None:
+            raise ValueError("diagnosed 报告的主根因必须提供 cause_code")
+        if self._allowed_cause_codes and any(
+            item.cause_code not in self._allowed_cause_codes
+            for item in diagnosis.hypotheses
+            if item.cause_code is not None
+        ):
+            raise ValueError("LLM 返回了未声明的 cause_code")
 
     @staticmethod
     def _render_context(context: DiagnosisContext) -> str:

@@ -51,6 +51,9 @@ class Hypothesis(BaseModel):
     """一个候选根因及其支持、反驳和待补充证据，置信度不是统计概率。"""
 
     hypothesis_id: UUID = Field(default_factory=uuid4)
+    cause_code: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9_]{1,127}$"
+    )
     cause: str = Field(min_length=1, max_length=1_000)
     confidence: float = Field(ge=0, le=1)
     supporting_evidence_ids: list[UUID] = Field(default_factory=list)

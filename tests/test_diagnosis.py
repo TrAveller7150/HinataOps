@@ -30,6 +30,7 @@ class FakeStructuredOutputClient:
         user_prompt: str,
         schema_name: str,
         schema: dict[str, object],
+        json_example: str,
     ) -> dict[str, object]:
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
@@ -48,12 +49,14 @@ class EvidenceAwareDiagnosisClient:
         user_prompt: str,
         schema_name: str,
         schema: dict[str, object],
+        json_example: str,
     ) -> dict[str, object]:
         evidence_id = json.loads(user_prompt)["observations"][0]["evidence_id"]
         return {
             "status": "diagnosed",
             "hypotheses": [
                 {
+                    "cause_code": "judge_worker_unavailable",
                     "cause": "Python Judge Worker 不可用",
                     "confidence": 0.9,
                     "supporting_evidence_ids": [evidence_id],
@@ -145,6 +148,7 @@ def test_diagnostician_builds_report_with_only_collected_evidence() -> None:
             "status": "diagnosed",
             "hypotheses": [
                 {
+                    "cause_code": "judge_worker_unavailable",
                     "cause": "Python Worker 停止消费",
                     "confidence": 0.9,
                     "supporting_evidence_ids": [evidence_id],
@@ -171,12 +175,44 @@ def test_diagnostician_builds_report_with_only_collected_evidence() -> None:
     assert "简体中文" in client.system_prompt
 
 
+def test_diagnostician_rejects_cause_code_outside_evaluation_contract() -> None:
+    context = _context()
+    evidence_id = str(context.observations[0].evidence_id)
+    client = FakeStructuredOutputClient(
+        {
+            "status": "diagnosed",
+            "hypotheses": [
+                {
+                    "cause_code": "redis_connectivity_failure",
+                    "cause": "Redis 连接失败",
+                    "confidence": 0.9,
+                    "supporting_evidence_ids": [evidence_id],
+                    "contradicting_evidence_ids": [],
+                    "missing_evidence": [],
+                }
+            ],
+            "primary_hypothesis_index": 0,
+            "conclusion": "Redis 连接失败。",
+            "recommended_action": None,
+        }
+    )
+
+    with pytest.raises(DiagnosisError, match="诊断报告契约"):
+        asyncio.run(
+            LlmInvestigationDiagnostician(
+                client,
+                allowed_cause_codes=frozenset({"judge_worker_unavailable"}),
+            ).diagnose(context)
+        )
+
+
 def test_diagnostician_rejects_hallucinated_evidence_id() -> None:
     client = FakeStructuredOutputClient(
         {
             "status": "diagnosed",
             "hypotheses": [
                 {
+                    "cause_code": "judge_worker_unavailable",
                     "cause": "虚构根因",
                     "confidence": 0.9,
                     "supporting_evidence_ids": ["00000000-0000-0000-0000-000000000001"],

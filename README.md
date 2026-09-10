@@ -14,7 +14,7 @@ HinataOps 是一个面向多服务系统的证据驱动运维 Agent Demo。它�
 - AoiLearn Judge Plugin 提供 Docker、Redis Stream、MySQL 流水线与 Prometheus 运行状态的受审核查询。
 - Agent Core 通过 Streamable HTTP 作为 MCP Client；不持有 Docker、SSH、Redis 或数据库凭证。
 - LangGraph 调查循环强制只读白名单、重复调用限制、轮次与总调用预算。
-- LLM Planner 与诊断器使用严格 JSON Schema；报告只能引用本次收集的 Evidence ID。
+- LLM Planner 与诊断器使用严格 JSON Schema 或供应商 JSON 模式，并由 Pydantic 二次校验；报告只能引用本次收集的 Evidence ID。
 - P2 动作账本提供人工审批后的受控 Docker 重启，默认不启用。
 - P3.5 提供 Ground Truth 驱动的故障评测；已完成一次 `judge-python` 停止的真实、可恢复注入。
 
