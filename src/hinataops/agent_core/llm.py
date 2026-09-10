@@ -28,9 +28,9 @@ class ModelToolCall(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(description="必须从本轮允许 Tool 清单中选择的 Tool 名称")
+    name: str = Field(description="工具名称（`name`）；必须从本轮允许的只读工具清单中选择")
     arguments_json: str = Field(
-        description="该 Tool 的参数 JSON 对象；无参数时必须为 '{}'"
+        description="工具参数 JSON 对象（`arguments_json`）；无参数时必须为 '{}'"
     )
 
     def to_tool_call(self) -> ToolCall:
@@ -58,7 +58,7 @@ class ModelPlanningDecision(BaseModel):
         ...,
         min_length=1,
         max_length=1_000,
-        description="不再需要检查时的结束依据；选择 Tool 时必须为 null",
+        description="调查结束依据（`finish_reason`）；使用简体中文，选择工具时必须为 null",
     )
 
     @model_validator(mode="after")
@@ -151,9 +151,9 @@ class OpenAICompatibleStructuredOutputClient:
 class LlmInvestigationPlanner(InvestigationPlanner):
     """仅向模型提供当前事故、已采集证据和经筛选的只读 Tool Catalog。"""
 
-    _system_prompt = """你是只读运维调查的 Planner。只根据提供的证据选择下一步检查，或在证据充分时结束。
-你没有执行 Tool、重启服务、运行命令或修改任何系统的权限。只能选择本轮允许 Tool 清单中的名称，
-并严格遵循输出 Schema。arguments_json 必须是 JSON 对象字符串；无参数时使用 '{}'."""
+    _system_prompt = """你是只读运维调查规划器。只依据已提供的观测证据选择下一步检查；证据充分时结束调查。
+你没有调用工具、重启服务、运行命令或修改系统的权限。只能从本轮提供的允许只读工具清单中选择工具名称。
+面向人工的结束依据必须使用简体中文。工具参数字段 `arguments_json` 必须是 JSON 对象字符串；无参数时使用 '{}'."""
 
     def __init__(
         self,
@@ -214,15 +214,17 @@ class ModelHypothesis(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    cause: str = Field(min_length=1, max_length=1_000, description="候选根因的简明表述")
+    cause: str = Field(
+        min_length=1, max_length=1_000, description="候选根因的简明中文表述"
+    )
     confidence: float = Field(ge=0, le=1, description="基于当前证据的置信度")
     supporting_evidence_ids: list[str] = Field(
-        description="支持该根因的已有 Evidence ID 字符串"
+        description="支持该根因的证据 ID（`supporting_evidence_ids`），必须来自已有观测证据"
     )
     contradicting_evidence_ids: list[str] = Field(
-        description="反驳该根因的已有 Evidence ID 字符串"
+        description="反驳该根因的证据 ID（`contradicting_evidence_ids`），必须来自已有观测证据"
     )
-    missing_evidence: list[str] = Field(description="仍需人工确认或补充的事实")
+    missing_evidence: list[str] = Field(description="仍需人工确认或补充的中文事实说明")
 
 
 class ModelDiagnosis(BaseModel):
@@ -230,16 +232,18 @@ class ModelDiagnosis(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: str = Field(description="只能为 diagnosed 或 inconclusive")
+    status: str = Field(description="机器状态值，只能为 diagnosed 或 inconclusive")
     hypotheses: list[ModelHypothesis] = Field(
         max_length=3, description="最多三个候选根因"
     )
     primary_hypothesis_index: int | None = Field(
-        description="主根因在 hypotheses 中的下标；inconclusive 时为 null"
+        description="主根因在假设列表（`hypotheses`）中的下标；inconclusive 时为 null"
     )
-    conclusion: str = Field(min_length=1, max_length=4_000, description="面向人工的诊断结论")
+    conclusion: str = Field(
+        min_length=1, max_length=4_000, description="面向人工的简体中文诊断结论"
+    )
     recommended_action: str | None = Field(
-        description="只给出建议，不形成或执行操作计划；无建议时为 null"
+        description="面向人工的简体中文建议；只给出建议，不形成或执行操作计划；无建议时为 null"
     )
 
     @model_validator(mode="after")
@@ -260,10 +264,10 @@ class ModelDiagnosis(BaseModel):
 class LlmInvestigationDiagnostician(InvestigationDiagnostician):
     """基于已结束调查生成报告；模型不能调用 Tool 或绕过 Evidence ID 校验。"""
 
-    _system_prompt = """你是运维调查的诊断器。只能依据提供的 Observation 形成根因假设和报告。
-所有 supporting_evidence_ids 与 contradicting_evidence_ids 必须逐字引用上下文中已有的 Evidence ID。
-证据不足时必须返回 inconclusive；不得虚构根因、日志、指标或执行任何操作。
-recommended_action 只能是人工建议，不能声称已执行重启、扩容或其他写操作。"""
+    _system_prompt = """你是运维调查诊断器。只能依据本次提供的观测证据（`Observation`）形成根因假设和诊断报告。
+支持证据 ID（`supporting_evidence_ids`）与反驳证据 ID（`contradicting_evidence_ids`）必须逐字引用上下文中已有的证据 ID。
+证据不足时必须返回 `inconclusive`；不得虚构根因、日志、指标，也不得执行任何操作。
+根因、待补充事实、结论和人工建议必须使用简体中文。`recommended_action` 只能是人工建议，不能声称已执行重启、扩容或其他写操作。"""
 
     def __init__(self, client: StructuredOutputClient) -> None:
         self._client = client

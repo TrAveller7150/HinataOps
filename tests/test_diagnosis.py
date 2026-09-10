@@ -167,6 +167,8 @@ def test_diagnostician_builds_report_with_only_collected_evidence() -> None:
     assert client.schema_name == "investigation_report"
     assert client.schema["additionalProperties"] is False
     assert evidence_id in client.user_prompt
+    assert "观测证据（`Observation`）" in client.system_prompt
+    assert "简体中文" in client.system_prompt
 
 
 def test_diagnostician_rejects_hallucinated_evidence_id() -> None:

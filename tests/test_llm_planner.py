@@ -125,6 +125,8 @@ def test_llm_planner_exposes_only_allowed_tools_and_parses_decision() -> None:
         "aoi_judge_get_stream_summary"
     ]
     assert "docker_restart_service" not in client.user_prompt
+    assert "只读运维调查规划器" in client.system_prompt
+    assert "简体中文" in client.system_prompt
     assert client.schema["additionalProperties"] is False
     assert set(client.schema["required"]) == {"tool_calls", "finish_reason"}
 
