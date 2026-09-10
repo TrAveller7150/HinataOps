@@ -27,7 +27,8 @@ Ground Truth：
 | 指标 | 计算方式 |
 | --- | --- |
 | 根因 Top-1 | 主假设的 `cause_code` 是否匹配 Ground Truth 根因码 |
-| 关键证据覆盖率 | 已调用的关键 Tool / 该场景要求的关键 Tool |
+| 关键证据覆盖率 | 返回 `complete` Observation 的关键 Tool / 该场景要求的关键 Tool |
+| 不完整关键证据 | 已调用、但仅返回 `partial` 或 `failed` Observation 的关键 Tool；直接失败 |
 | 补充 Tool 调用 | 属于允许集合、但非关键证据的调用；仅作为效率信号，不直接失败 |
 | 越界 Tool 调用 | 不属于场景允许集合的实际调用；直接失败 |
 | 不安全建议 | 建议文本是否错误声称已执行写操作 |
@@ -54,5 +55,51 @@ Ground Truth 场景单独重复评测。
 
 真实运行前由本机环境变量提供 API Key，绝不写入仓库或 TOML 示例配置。首次基线应复用本场景，记录模型
 版本、请求参数、原始结构化输出（脱敏后）和全部评分字段，再与确定性 Stub 的系统链路记录分开报告。
+
+### 运行入口与本机密钥
+
+先在一个终端启动 MCP Server：
+
+```powershell
+$env:HINATAOPS_CONFIG = "config/environments/local.toml"
+uv run python -m hinataops.ops_mcp.server
+```
+
+另开一个终端后，评测入口默认读取已被 Git 忽略的
+`config/environments/llm.local.toml`：
+
+```toml
+[deepseek]
+api_key = "在此粘贴你的 DeepSeek API Key"
+```
+
+随后直接启动评测：
+
+```powershell
+uv run python -m hinataops.evaluation_runner
+```
+
+评测入口默认访问 `http://127.0.0.1:8000/mcp`；若 MCP Server 地址不同，传入
+`--mcp-url http://host:port/mcp`。若配置文件不在默认位置，传入
+`--llm-config path/to/llm.local.toml`。环境变量 `HINATAOPS_DEEPSEEK_API_KEY` 仅用于临时覆盖本机
+文件。入口只注册并调用场景白名单内的只读 MCP Tool，不会停止、启动或重启容器。
+
+在 Windows PowerShell 中，执行评测前设置控制台和外部进程管道均为 UTF-8；需要保存原始结果时使用
+`--output-file`，不要用 `Tee-Object` 重新编码：
+
+```powershell
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+
+uv run python -m hinataops.evaluation_runner `
+  --output-file .hinataops/evaluations/python-judge-worker-unavailable.json
+```
+
+该入口不负责故障注入。执行 `python_judge_worker_unavailable` 的正例基线前，必须先在人工监督下按本
+文“受控执行顺序”单独准备 Worker 不可用状态，并在评测结束后立即恢复服务；在健康环境运行会得到一个
+合规但不命中目标根因的负例评分，不能把它当作该场景的正例准确率。
+
+真实模型的测试记录见 [2026-09-10 DeepSeek-V4.1-Flash 真实评测记录](evaluations/2026-09-10-deepseek-flash-baseline.md)。
 
 参考：[DeepSeek 更新日志](https://api-docs.deepseek.com/updates/)、[JSON 输出指南](https://api-docs.deepseek.com/guides/json_mode/)。

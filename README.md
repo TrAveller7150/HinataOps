@@ -33,6 +33,8 @@ MCP Streamable HTTP 地址为 `http://127.0.0.1:8000/mcp`。
 uv run pytest
 ```
 
+真实 DeepSeek 评测入口及 API Key 的本机填写方式见 [P3.5 评测文档](docs/P3_5_EVALUATION.md)。
+
 ## 当前边界
 
 - 当前没有 CLI、FastAPI 或 React 展示层；下一阶段先建立真实 LLM 评测基线。

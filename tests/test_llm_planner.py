@@ -108,7 +108,7 @@ def test_llm_planner_exposes_only_allowed_tools_and_parses_decision() -> None:
                     "arguments_json": '{"language":"python"}',
                 }
             ],
-            "finish_reason": None,
+            "finish_reason_code": None,
         }
     )
     planner = LlmInvestigationPlanner(
@@ -127,13 +127,13 @@ def test_llm_planner_exposes_only_allowed_tools_and_parses_decision() -> None:
     ]
     assert "docker_restart_service" not in client.user_prompt
     assert "只读运维调查规划器" in client.system_prompt
-    assert "简体中文" in client.system_prompt
+    assert "不要在规划结果中输出根因判断" in client.system_prompt
     assert client.schema["additionalProperties"] is False
-    assert set(client.schema["required"]) == {"tool_calls", "finish_reason"}
+    assert set(client.schema["required"]) == {"tool_calls", "finish_reason_code"}
 
 
 def test_llm_planner_rejects_invalid_structured_decision() -> None:
-    client = FakeStructuredOutputClient({"tool_calls": [], "finish_reason": None})
+    client = FakeStructuredOutputClient({"tool_calls": [], "finish_reason_code": None})
     planner = LlmInvestigationPlanner(
         client, readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})
     )
@@ -148,7 +148,7 @@ def test_workflow_stops_before_mcp_when_llm_selects_unallowed_tool() -> None:
             "tool_calls": [
                 {"name": "docker_restart_service", "arguments_json": "{}"}
             ],
-            "finish_reason": None,
+            "finish_reason_code": None,
         }
     )
     planner = LlmInvestigationPlanner(
@@ -176,3 +176,16 @@ def test_llm_output_schema_keeps_dynamic_tool_arguments_as_a_json_string() -> No
 
     assert call_definition["properties"]["arguments_json"]["type"] == "string"
     assert call_definition["additionalProperties"] is False
+
+
+def test_llm_planner_maps_finish_code_to_a_deterministic_stop_reason() -> None:
+    client = FakeStructuredOutputClient(
+        {"tool_calls": [], "finish_reason_code": "evidence_sufficient"}
+    )
+    planner = LlmInvestigationPlanner(
+        client, readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})
+    )
+
+    decision = asyncio.run(planner.decide(_context()))
+
+    assert decision.finish_reason == "模型认为现有证据已足够，结束调查。"

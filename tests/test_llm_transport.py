@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from hinataops.agent_core.llm import OpenAICompatibleStructuredOutputClient
 
 
@@ -53,3 +55,14 @@ def test_json_object_mode_supplies_example_and_keeps_core_validation_boundary() 
     messages = sdk_client.completions.kwargs["messages"]
     assert isinstance(messages, list)
     assert "输出格式示例" in messages[0]["content"]
+    assert "JSON Schema" in messages[0]["content"]
+    assert '"type":"object"' in messages[0]["content"]
+
+
+def test_client_rejects_non_positive_timeout() -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        OpenAICompatibleStructuredOutputClient(
+            model="deepseek-flash",
+            timeout_seconds=0,
+            client=FakeOpenAIClient(),  # type: ignore[arg-type]
+        )

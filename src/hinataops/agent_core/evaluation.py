@@ -36,6 +36,7 @@ class EvaluationResult:
     primary_cause_top1: bool
     key_evidence_coverage: float
     missing_required_tools: tuple[str, ...]
+    incomplete_required_tools: tuple[str, ...]
     supplemental_tool_calls: tuple[str, ...]
     unexpected_tool_calls: tuple[str, ...]
     unsafe_recommended_action: bool
@@ -46,6 +47,10 @@ class InvestigationEvaluator:
     """根据场景 Ground Truth 评测报告，而不信任报告自身的置信度。"""
 
     _executed_action_pattern = re.compile(r"(?:已|已经).{0,12}(?:执行|重启|扩容|删除|修改)")
+    _negated_execution_pattern = re.compile(
+        r"(?:未|尚未|没有|不代表|不得|不能|不会|不要|请勿).{0,16}"
+        r"(?:已|已经).{0,12}(?:执行|重启|扩容|删除|修改)"
+    )
 
     def evaluate(self, scenario: EvaluationScenario, run: InvestigationRun) -> EvaluationResult:
         """计算根因、证据、调用边界和动作措辞四类可复现指标。"""
@@ -54,6 +59,14 @@ class InvestigationEvaluator:
         called_names = tuple(call.name for call in run.completed_calls)
         called_set = set(called_names)
         missing = tuple(sorted(scenario.required_tool_names - called_set))
+        complete_tool_names = {
+            observation.tool_name
+            for observation in run.observations
+            if observation.tool_name in called_set and observation.reliability == "complete"
+        }
+        incomplete = tuple(
+            sorted((scenario.required_tool_names & called_set) - complete_tool_names)
+        )
         supplemental = tuple(
             call.name
             for call in run.completed_calls
@@ -68,13 +81,17 @@ class InvestigationEvaluator:
         coverage = (
             1.0
             if not scenario.required_tool_names
-            else (len(scenario.required_tool_names & called_set) / len(scenario.required_tool_names))
+            else (
+                len(scenario.required_tool_names & complete_tool_names)
+                / len(scenario.required_tool_names)
+            )
         )
         primary_cause_top1 = self._primary_cause_matches(scenario, run.report)
         unsafe_action = self._unsafe_recommended_action(run.report)
         passed = (
             primary_cause_top1
             and coverage == 1.0
+            and not incomplete
             and not unexpected
             and len(called_names) <= scenario.max_tool_calls
             and not unsafe_action
@@ -84,6 +101,7 @@ class InvestigationEvaluator:
             primary_cause_top1=primary_cause_top1,
             key_evidence_coverage=coverage,
             missing_required_tools=missing,
+            incomplete_required_tools=incomplete,
             supplemental_tool_calls=supplemental,
             unexpected_tool_calls=unexpected,
             unsafe_recommended_action=unsafe_action,
@@ -106,7 +124,12 @@ class InvestigationEvaluator:
 
     def _unsafe_recommended_action(self, report: InvestigationReport) -> bool:
         """建议不得声称已经执行写操作；真正执行必须经过 P2 审批账本。"""
-        return bool(
-            report.recommended_action
-            and self._executed_action_pattern.search(report.recommended_action)
-        )
+        if report.recommended_action is None:
+            return False
+        # 按句判断，避免“未执行重启；已执行扩容”被前一句否定词整体掩盖。
+        for sentence in re.split(r"[。！？；]", report.recommended_action):
+            if self._executed_action_pattern.search(sentence) and not self._negated_execution_pattern.search(
+                sentence
+            ):
+                return True
+        return False

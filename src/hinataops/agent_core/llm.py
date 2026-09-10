@@ -54,19 +54,20 @@ class ModelPlanningDecision(BaseModel):
         max_length=4,
         description="本轮需要执行的零到四个只读检查",
     )
-    finish_reason: str | None = Field(
+    finish_reason_code: Literal["evidence_sufficient", "no_further_readonly_check"] | None = Field(
         ...,
-        min_length=1,
-        max_length=1_000,
-        description="调查结束依据（`finish_reason`）；使用简体中文，选择工具时必须为 null",
+        description=(
+            "调查结束码（`finish_reason_code`）；仅可为 evidence_sufficient 或 "
+            "no_further_readonly_check，选择工具时必须为 null"
+        ),
     )
 
     @model_validator(mode="after")
     def validate_decision(self) -> "ModelPlanningDecision":
         """与内部决策保持相同的结束互斥语义。"""
-        if not self.tool_calls and self.finish_reason is None:
-            raise ValueError("未选择 Tool 时必须提供 finish_reason")
-        if self.tool_calls and self.finish_reason is not None:
+        if not self.tool_calls and self.finish_reason_code is None:
+            raise ValueError("未选择 Tool 时必须提供 finish_reason_code")
+        if self.tool_calls and self.finish_reason_code is not None:
             raise ValueError("选择 Tool 的调查轮次不能同时结束")
         return self
 
@@ -74,7 +75,14 @@ class ModelPlanningDecision(BaseModel):
         """完成参数解析后，再进入既有领域决策契约。"""
         return PlanningDecision(
             tool_calls=[call.to_tool_call() for call in self.tool_calls],
-            finish_reason=self.finish_reason,
+            finish_reason=(
+                {
+                    "evidence_sufficient": "模型认为现有证据已足够，结束调查。",
+                    "no_further_readonly_check": "模型未找到适用的后续只读检查，结束调查。",
+                }.get(self.finish_reason_code)
+                if self.finish_reason_code is not None
+                else None
+            ),
         )
 
 
@@ -103,12 +111,19 @@ class OpenAICompatibleStructuredOutputClient:
         base_url: str | None = None,
         response_format_mode: Literal["json_schema", "json_object"] = "json_schema",
         max_tokens: int = 2_000,
+        timeout_seconds: float = 45,
         client: AsyncOpenAI | None = None,
     ) -> None:
         if max_tokens < 1:
             raise ValueError("max_tokens 必须大于 0")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds 必须大于 0")
         self._model = model
-        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = client or AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout_seconds,
+        )
         self._response_format_mode = response_format_mode
         self._max_tokens = max_tokens
 
@@ -138,6 +153,8 @@ class OpenAICompatibleStructuredOutputClient:
             formatted_system_prompt += (
                 "\n必须只返回 JSON 对象，不要 Markdown 或额外文字。"
                 f"输出格式示例：{json_example}"
+                "\n输出必须符合以下 JSON Schema："
+                f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}"
             )
         try:
             response = await self._client.chat.completions.create(
@@ -173,7 +190,8 @@ class LlmInvestigationPlanner(InvestigationPlanner):
 
     _system_prompt = """你是只读运维调查规划器。只依据已提供的观测证据选择下一步检查；证据充分时结束调查。
 你没有调用工具、重启服务、运行命令或修改系统的权限。只能从本轮提供的允许只读工具清单中选择工具名称。
-面向人工的结束依据必须使用简体中文。工具参数字段 `arguments_json` 必须是 JSON 对象字符串；无参数时使用 '{}'."""
+结束时仅返回受限的 `finish_reason_code`，不要在规划结果中输出根因判断、推测或人工建议。
+工具参数字段 `arguments_json` 必须是 JSON 对象字符串；无参数时使用 '{}'."""
 
     def __init__(
         self,
@@ -201,11 +219,15 @@ class LlmInvestigationPlanner(InvestigationPlanner):
                 user_prompt=self._render_context(context, allowed_tools),
                 schema_name="investigation_decision",
                 schema=ModelPlanningDecision.model_json_schema(),
-                json_example='{"tool_calls":[],"finish_reason":"证据已足够"}',
+                json_example='{"tool_calls":[],"finish_reason_code":"evidence_sufficient"}',
             )
             decision = ModelPlanningDecision.model_validate(raw_decision).to_planning_decision()
-        except (ValidationError, TypeError) as error:
-            raise PlannerError("LLM 结构化输出不符合调查决策契约") from error
+        except ValidationError as error:
+            raise PlannerError(
+                f"LLM 结构化输出不符合调查决策契约: {_validation_error_summary(error)}"
+            ) from error
+        except TypeError as error:
+            raise PlannerError("LLM 结构化输出不符合调查决策契约: 类型不匹配") from error
         allowed_names = {tool["name"] for tool in allowed_tools}
         disallowed_names = {call.name for call in decision.tool_calls} - allowed_names
         if disallowed_names:
@@ -228,6 +250,15 @@ class LlmInvestigationPlanner(InvestigationPlanner):
             "allowed_readonly_tools": allowed_tools,
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _validation_error_summary(error: ValidationError) -> str:
+    """仅保留字段位置和校验类别，避免调试信息回显完整模型输出。"""
+    details = []
+    for item in error.errors(include_url=False):
+        location = ".".join(str(part) for part in item["loc"]) or "根对象"
+        details.append(f"{location}: {item['type']}")
+    return "；".join(details)
 
 
 class ModelHypothesis(BaseModel):
