@@ -58,3 +58,10 @@ allowed_services = ["judge-python"]
 `OpenAICompatibleStructuredOutputClient` 实现，可在构造时显式传入模型名、API Key 和兼容 API 的 `base_url`。调查图仍只依赖 `InvestigationPlanner`，不依赖具体模型 SDK。
 
 模型只能看到事故、已采集证据和经白名单筛选的只读 Tool 描述。它通过严格 JSON Schema 返回检查建议；动态 Tool 参数以 `arguments_json` 字符串返回，Core 解析为 `ToolCall` 后仍会校验 Tool Catalog、重复调用和预算。模型输出不合法或选择未授权 Tool 时，工作流安全结束，不会调用 MCP Tool。
+
+## P3.4B：证据约束的诊断报告
+
+调查图的所有停止路径都会进入诊断节点。`LlmInvestigationDiagnostician` 只能引用本次
+`Observation` 的 Evidence ID，并由 Core 将输出重建为 `Hypothesis` 与 `InvestigationReport`。
+报告引用不存在的证据、缺少主假设或结构不合法时不会产生诊断结论；系统改为输出确定性的
+`inconclusive` 报告，保留已采集证据和停止原因。`recommended_action` 仅为人工建议，不能执行写操作。

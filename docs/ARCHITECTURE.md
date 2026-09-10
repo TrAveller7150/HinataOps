@@ -529,6 +529,18 @@ class InvestigationDecision:
 参数解析或 Tool 白名单检查失败时，工作流记录可解释的 Planner 错误并安全结束，不执行 MCP Tool。
 格式修复重试将在具备模型调用可观测性后再评估，避免为 Demo 增加隐藏的二次模型调用。
 
+### 10.2.1 诊断报告与降级
+
+LangGraph 在调查停止后统一进入诊断节点。诊断模型只接收本次 Incident、停止原因、已完成的
+只读调用和 Observation；它不接收 Tool Catalog、MCP Client、凭证或写操作入口。
+
+- 模型以最多三个候选假设、主假设下标和建议文本生成严格 Schema 输出。
+- Core 为每个候选假设分配新的 Hypothesis ID，并校验其支持/反驳 Evidence ID 属于本次 Observation。
+- `diagnosed` 报告必须指定主假设；`inconclusive` 报告不得伪造主假设。
+- 任一模型或引用校验失败时，使用确定性的 `InconclusiveDiagnostician` 保留事实与停止原因，不猜测根因。
+
+这样“模型输出 JSON 合法”不等于“诊断可信”：只有通过领域模型的 Evidence ID 引用校验，报告才可进入评测或展示层。
+
 ### 10.3 Prompt 上下文
 
 单次 Prompt 只组装当前节点需要的上下文：

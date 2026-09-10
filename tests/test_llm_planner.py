@@ -26,6 +26,7 @@ class FakeStructuredOutputClient:
         *,
         system_prompt: str,
         user_prompt: str,
+        schema_name: str,
         schema: dict[str, object],
     ) -> dict[str, object]:
         self.system_prompt = system_prompt

@@ -9,9 +9,15 @@ from typing import Literal
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from hinataops.agent_core.diagnosis import (
+    DiagnosisContext,
+    DiagnosisError,
+    InconclusiveDiagnostician,
+    InvestigationDiagnostician,
+)
 from hinataops.agent_core.evidence import EvidenceCollector
 from hinataops.agent_core.gateway import ToolCatalog, ToolGateway, ToolGatewayError
-from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
+from hinataops.agent_core.models import IncidentRequest, InvestigationReport, Observation, ToolCall
 from hinataops.agent_core.planner import InvestigationPlanner, PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget, InvestigationPolicyError
 
@@ -26,10 +32,11 @@ class _WorkflowState(TypedDict):
     planned_calls: list[ToolCall]
     investigation_rounds: int
     stop_reason: str | None
+    report: InvestigationReport | None
 
 
 class InvestigationRun:
-    """一次图运行的只读结果，后续 P3.4 将据此生成正式调查报告。"""
+    """一次图运行的只读结果与最终可审查诊断报告。"""
 
     def __init__(
         self,
@@ -39,12 +46,14 @@ class InvestigationRun:
         completed_calls: list[ToolCall],
         investigation_rounds: int,
         stop_reason: str,
+        report: InvestigationReport,
     ) -> None:
         self.incident = incident
         self.observations = observations
         self.completed_calls = completed_calls
         self.investigation_rounds = investigation_rounds
         self.stop_reason = stop_reason
+        self.report = report
 
 
 class InvestigationWorkflow:
@@ -55,11 +64,13 @@ class InvestigationWorkflow:
         gateway: ToolGateway,
         planner: InvestigationPlanner,
         budget: InvestigationBudget,
+        diagnostician: InvestigationDiagnostician | None = None,
     ) -> None:
         self._gateway = gateway
         self._planner = planner
         self._budget = budget
         self._collector = EvidenceCollector(gateway)
+        self._diagnostician = diagnostician or InconclusiveDiagnostician()
         self._graph = self._build_graph()
 
     async def run(self, incident: IncidentRequest) -> InvestigationRun:
@@ -73,6 +84,7 @@ class InvestigationWorkflow:
                 "planned_calls": [],
                 "investigation_rounds": 0,
                 "stop_reason": None,
+                "report": None,
             }
         )
         return InvestigationRun(
@@ -81,6 +93,7 @@ class InvestigationWorkflow:
             completed_calls=result["completed_calls"],
             investigation_rounds=result["investigation_rounds"],
             stop_reason=result["stop_reason"] or "调查图异常结束",
+            report=result["report"],
         )
 
     def _build_graph(self):
@@ -90,19 +103,21 @@ class InvestigationWorkflow:
         graph.add_node("plan", self._plan)
         graph.add_node("authorize", self._authorize)
         graph.add_node("execute", self._execute)
+        graph.add_node("diagnose", self._diagnose)
         graph.add_edge(START, "load_catalog")
         graph.add_edge("load_catalog", "plan")
         graph.add_edge("plan", "authorize")
         graph.add_conditional_edges(
             "authorize",
             self._after_authorize,
-            {"execute": "execute", "finish": END},
+            {"execute": "execute", "finish": "diagnose"},
         )
         graph.add_conditional_edges(
             "execute",
             self._after_execute,
-            {"plan": "plan", "finish": END},
+            {"plan": "plan", "finish": "diagnose"},
         )
+        graph.add_edge("diagnose", END)
         return graph.compile()
 
     async def _load_catalog(self, state: _WorkflowState) -> dict[str, object]:
@@ -188,6 +203,21 @@ class InvestigationWorkflow:
         if len(updates["completed_calls"]) >= self._budget.max_tool_calls:
             updates["stop_reason"] = "已达到 Tool 调用次数预算"
         return updates
+
+    async def _diagnose(self, state: _WorkflowState) -> dict[str, object]:
+        """在所有停止路径上构建报告；模型失败时返回确定性不确定结论。"""
+        stop_reason = state["stop_reason"] or "调查图异常结束"
+        context = DiagnosisContext(
+            incident=state["incident"],
+            observations=state["observations"],
+            completed_calls=state["completed_calls"],
+            stop_reason=stop_reason,
+        )
+        try:
+            report = await self._diagnostician.diagnose(context)
+        except DiagnosisError:
+            report = await InconclusiveDiagnostician().diagnose(context)
+        return {"report": report}
 
     @staticmethod
     def _after_authorize(state: _WorkflowState) -> Literal["execute", "finish"]:
