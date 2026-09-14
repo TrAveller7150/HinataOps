@@ -1,12 +1,17 @@
 # HinataOps
 
-HinataOps 是一个面向多服务系统的证据驱动运维 Agent Demo。它以可复用的调查引擎为核心，
-通过 MCP Plugin 接入具体系统；AoiLearn 判题系统是当前唯一的深度参考集成与故障实验环境。
+HinataOps 是一个**面向生产级通用 SRE 调查平台的最小可信实现**：以可复用的调查引擎为核心，
+通过 Toolset 与 MCP 等接入方式连接不同系统，在人工监督下完成跨数据源取证、根因分析与受控处置。
+
+当前仓库仍处于学习与验证阶段，不宣称已经具备完整生产可用性。AoiLearn 判题系统是首个深度参考集成、
+故障实验环境与端到端验收场，而不是 HinataOps 的产品边界。项目会参考 HolmesGPT 等成熟 SRE Agent 的
+分层思想和调查循环，同时保留自身的证据溯源、细粒度策略控制与 MCP 隔离设计。
 
 项目不试图替代 Prometheus、Grafana、Sentry 或 CloudWatch。它解决的是跨数据源调查：从事故描述
 出发，受预算地收集事实，形成可追溯诊断报告，并在人工监督下提出有限处置建议。
 
-详细设计见 [架构文档](docs/ARCHITECTURE.md)。
+目标设计见 [V3 目标架构](docs/ARCHITECTURE_V3.md)，当前代码的迁移顺序见
+[V3 迁移清单](docs/V3_MIGRATION_CHECKLIST.md)。[V2 架构](docs/ARCHITECTURE.md)仅保留为当前实现快照。
 
 ## 当前已实现
 
@@ -48,9 +53,10 @@ uv run pytest
 
 真实 DeepSeek 评测入口及 API Key 的本机填写方式见 [P3.5 评测文档](docs/P3_5_EVALUATION.md)。
 
-## 当前边界
+## 当前实现边界
 
-- 当前提供面向单个事故画像的人工调查 CLI；它不携带评测预期根因，尚未提供 FastAPI 或 React 展示层。
+- 当前提供面向单个事故画像的人工调查 CLI；它不携带评测预期根因，尚未提供 API、事件流或 Web 展示层。
 - 当前没有 Runbook RAG；仅在评测证明缺少运行知识是主要失败原因时再引入。
-- 通用 Toolset 不接受任意 Shell、SQL、Redis 命令或 PromQL；新业务系统通过新领域 Plugin 接入。
+- 当前 Toolset 不向模型开放任意 Shell、SQL、Redis 命令或网络请求；通用只读查询能力及其策略边界将在
+  V3 架构中重新定义。
 - AoiLearn 是参考集成，不是 Agent Core 的内置领域。
