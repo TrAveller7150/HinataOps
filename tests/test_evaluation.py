@@ -28,6 +28,7 @@ def _run(
             value={"judge_python_state": "exited"},
             summary="judge-python 已停止。",
             reliability=container_reliability,
+            result_status="partial" if container_reliability == "partial" else "success",
         ),
         Observation(
             source="prometheus",

@@ -1,4 +1,4 @@
-"""调查 Agent 在 LLM、MCP Client 与报告层之间共享的稳定领域契约。"""
+"""调查 Agent 在 LLM、Tool Provider 与报告层之间共享的稳定领域契约。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
+
+from hinataops.tooling.contracts import ToolError, ToolResultStatus
 
 
 Reliability = Literal["complete", "partial", "failed"]
@@ -23,7 +25,7 @@ class IncidentRequest(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """Planner 建议的一次 MCP Tool 调用，执行前仍须经过确定性预算策略。"""
+    """一次 Tool 调用请求，执行前仍须经过确定性预算策略。"""
 
     name: str = Field(pattern=r"^[a-z][a-z0-9_]{1,127}$")
     arguments: dict[str, object] = Field(default_factory=dict)
@@ -46,7 +48,7 @@ class PlanningTrace(BaseModel):
 
 
 class Observation(BaseModel):
-    """一次完成的 MCP 调用产生的原始事实与可读摘要；不在此处推断根因。"""
+    """一次 Tool 调用产生的事实与可读摘要；不在此处推断根因。"""
 
     evidence_id: UUID = Field(default_factory=uuid4)
     source: str = Field(min_length=1, max_length=64)
@@ -56,6 +58,28 @@ class Observation(BaseModel):
     value: dict[str, object]
     summary: str = Field(min_length=1, max_length=2_000)
     reliability: Reliability
+    result_status: ToolResultStatus = "success"
+    error: ToolError | None = None
+
+    @model_validator(mode="after")
+    def validate_result_semantics(self) -> "Observation":
+        """保持 ToolResult 状态、证据可靠性和结构化错误一致。"""
+        expected_reliability: dict[ToolResultStatus, Reliability] = {
+            "success": "complete",
+            "no_data": "complete",
+            "partial": "partial",
+            "error": "failed",
+        }
+        if self.reliability != expected_reliability[self.result_status]:
+            raise ValueError("result_status 与 reliability 不一致")
+        if self.result_status == "error":
+            if self.error is None:
+                raise ValueError("error 观测必须携带结构化 error")
+            if self.value:
+                raise ValueError("error 观测不能携带业务 value")
+        elif self.result_status in {"success", "no_data"} and self.error is not None:
+            raise ValueError("success/no_data 观测不能携带 error")
+        return self
 
 
 class RetryAttempt(BaseModel):

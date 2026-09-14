@@ -13,14 +13,13 @@ from hinataops.actions.repository import InvalidActionStateError
 from hinataops.ops_mcp.adapters import SshCommandError, SshRunner
 from hinataops.ops_mcp.actions import DockerRestartExecutor
 from hinataops.ops_mcp.config import EnvironmentConfig
-from hinataops.ops_mcp.contracts import ObservationError, new_metadata
+from hinataops.ops_mcp.contracts import ObservationError, ObservationMetadata, new_metadata
 from hinataops.ops_mcp.plugins import ToolsetContext
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.config import AoiJudgeToolsetSettings
-from hinataops.ops_mcp.toolsets.aoi_learn_judge.pipeline_summary import MysqlJudgePipelineSummary
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.restart import AoiJudgeRestartVerifier
-from hinataops.ops_mcp.toolsets.aoi_learn_judge.runtime_summary import PrometheusJudgeRuntimeSummary
-from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage, RedisStreamSummary
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.stream_summary import JudgeLanguage
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.toolset import AoiLearnJudgeToolset
+from hinataops.tooling.contracts import ToolError, ToolResult, ToolResultStatus
 
 logger = logging.getLogger(__name__)
 
@@ -72,51 +71,72 @@ class AoiLearnJudgePlugin:
             retryable=False,
         )
 
+    @staticmethod
+    def _tool_result(
+        metadata: ObservationMetadata,
+        data: dict[str, object],
+        status: ToolResultStatus,
+    ) -> dict[str, object]:
+        """在 MCP 边界将领域快照封装为传输无关的 ToolResult。"""
+        error = (
+            ToolError.model_validate(metadata.error.model_dump())
+            if metadata.error is not None
+            else None
+        )
+        return ToolResult(
+            status=status,
+            environment=metadata.environment,
+            source=metadata.source,
+            observed_at=metadata.observed_at,
+            data=data,
+            warnings=metadata.warnings,
+            error=error,
+        ).model_dump(mode="json")
+
+    def _failed_tool_result(
+        self,
+        config: EnvironmentConfig,
+        source: Literal["docker", "mysql", "redis", "prometheus"],
+        label: str,
+        error: Exception,
+    ) -> dict[str, object]:
+        """把采集异常转成无占位业务数据的失败结果。"""
+        metadata = new_metadata(
+            config.environment.name,
+            source,
+            complete=False,
+            error=self._observation_error(label, error),
+        )
+        return self._tool_result(metadata, {}, "error")
+
     def _register_observation_tools(self, mcp: FastMCP, context: ToolsetContext) -> None:
         @mcp.tool(name="aoi_judge_get_container_runtime")
         async def aoi_judge_get_container_runtime() -> dict:
             """返回判题相关拓扑服务和沙箱池的有界 Docker 状态。"""
             config = context.config_provider()
             try:
-                return (await self._toolset(config).get_container_runtime()).model_dump(mode="json")
+                result = await self._toolset(config).get_container_runtime()
             except Exception as error:
-                return {
-                    "metadata": new_metadata(
-                        config.environment.name,
-                        "docker",
-                        complete=False,
-                        error=self._observation_error("Docker 判题运行时", error),
-                    ).model_dump(mode="json"),
-                    "services": [],
-                    "sandbox_pool_running": 0,
-                    "sandbox_pool_exited": 0,
-                    "unmanaged_running": [],
-                    "unmanaged_exited_count": 0,
-                    "recent_unmanaged_exited": [],
-                }
+                return self._failed_tool_result(config, "docker", "Docker 判题运行时", error)
+            return self._tool_result(
+                result.metadata,
+                result.model_dump(mode="json", exclude={"metadata"}),
+                "success",
+            )
 
         @mcp.tool(name="aoi_judge_get_stream_summary")
         async def aoi_judge_get_stream_summary(language: JudgeLanguage) -> dict:
             """返回一种语言判题 Stream 的历史长度、lag 与 pending 证据。"""
             config = context.config_provider()
-            settings = self._settings(config)
-            stream = next(item for item in settings.judge_streams if item.language == language)
             try:
                 result = await self._toolset(config).get_stream_summary(language)
             except Exception as error:
-                result = RedisStreamSummary(
-                    metadata=new_metadata(
-                        config.environment.name,
-                        "redis",
-                        complete=False,
-                        error=self._observation_error("Redis 判题 Stream", error),
-                    ),
-                    language=language,
-                    stream_key=stream.stream_key,
-                    history_length=0,
-                    consumer_group=None,
-                )
-            return result.model_dump(mode="json")
+                return self._failed_tool_result(config, "redis", "Redis 判题 Stream", error)
+            return self._tool_result(
+                result.metadata,
+                result.model_dump(mode="json", exclude={"metadata"}),
+                "success",
+            )
 
         @mcp.tool(name="aoi_judge_get_pipeline_summary")
         async def aoi_judge_get_pipeline_summary(
@@ -127,18 +147,15 @@ class AoiLearnJudgePlugin:
             try:
                 result = await self._toolset(config).get_pipeline_summary(window_minutes)
             except Exception as error:
-                result = MysqlJudgePipelineSummary(
-                    metadata=new_metadata(
-                        config.environment.name,
-                        "mysql",
-                        complete=False,
-                        error=self._observation_error("MySQL 判题流水线", error),
-                    ),
-                    window_minutes=window_minutes,
-                    task_statuses=[],
-                    outbox_statuses=[],
-                )
-            return result.model_dump(mode="json")
+                return self._failed_tool_result(config, "mysql", "MySQL 判题流水线", error)
+            status: ToolResultStatus = (
+                "success" if result.task_statuses or result.outbox_statuses else "no_data"
+            )
+            return self._tool_result(
+                result.metadata,
+                result.model_dump(mode="json", exclude={"metadata"}),
+                status,
+            )
 
         @mcp.tool(name="aoi_judge_get_runtime")
         async def aoi_judge_get_runtime() -> dict:
@@ -147,16 +164,14 @@ class AoiLearnJudgePlugin:
             try:
                 result = await self._toolset(config).get_runtime()
             except Exception as error:
-                result = PrometheusJudgeRuntimeSummary(
-                    metadata=new_metadata(
-                        config.environment.name,
-                        "prometheus",
-                        complete=False,
-                        error=self._observation_error("Prometheus 判题运行时", error),
-                    ),
-                    runtimes=[],
+                return self._failed_tool_result(
+                    config, "prometheus", "Prometheus 判题运行时", error
                 )
-            return result.model_dump(mode="json")
+            return self._tool_result(
+                result.metadata,
+                result.model_dump(mode="json", exclude={"metadata"}),
+                "success",
+            )
 
     def _register_action_tools(self, mcp: FastMCP, context: ToolsetContext) -> None:
         @mcp.tool(name="docker_restart_service")

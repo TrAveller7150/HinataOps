@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 import pytest
 
 from hinataops.agent_core.diagnosis import DiagnosisContext, DiagnosisError
-from hinataops.agent_core.gateway import GatewayToolResult, ToolDescriptor
 from hinataops.agent_core.llm import (
     LlmInvestigationDiagnostician,
     ValidatedStructuredOutput,
@@ -13,6 +12,7 @@ from hinataops.agent_core.llm import (
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 from hinataops.agent_core.planner import InvestigationPlanner, PlanningContext, PlanningDecision
 from hinataops.agent_core.policy import InvestigationBudget
+from hinataops.tooling.contracts import ToolDefinition, ToolResult
 from hinataops.agent_core.workflow import InvestigationWorkflow
 
 
@@ -91,28 +91,25 @@ class OneCheckPlanner(InvestigationPlanner):
         return PlanningDecision(finish_reason="已取得关键证据")
 
 
-class OneEvidenceGateway:
-    """模拟一个真实 MCP Tool 的结构化返回。"""
+class OneEvidenceProvider:
+    """模拟一个真实 Tool 的结构化返回。"""
 
-    async def list_tools(self) -> list[ToolDescriptor]:
+    async def list_tools(self) -> list[ToolDefinition]:
         return [
-            ToolDescriptor(
+            ToolDefinition(
                 name="aoi_judge_get_stream_summary",
                 description="Stream 摘要",
                 input_schema={"type": "object"},
             )
         ]
 
-    async def call_tool(self, call: ToolCall) -> GatewayToolResult:
-        return GatewayToolResult(
-            value={
-                "metadata": {
-                    "source": "redis",
-                    "observed_at": "2026-09-10T00:00:00+00:00",
-                    "complete": True,
-                },
-                "lag": 42,
-            }
+    async def invoke(self, call: ToolCall) -> ToolResult:
+        return ToolResult(
+            status="success",
+            environment="aoi-local",
+            source="redis",
+            observed_at=datetime(2026, 9, 10, tzinfo=UTC),
+            data={"lag": 42},
         )
 
 
@@ -269,7 +266,7 @@ def test_diagnostician_downgrades_low_confidence_primary_to_inconclusive() -> No
 
 def test_workflow_generates_a_traceable_report_after_evidence_collection() -> None:
     workflow = InvestigationWorkflow(
-        OneEvidenceGateway(),
+        OneEvidenceProvider(),
         OneCheckPlanner(),
         InvestigationBudget(readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})),
         LlmInvestigationDiagnostician(EvidenceAwareDiagnosisClient()),
@@ -289,7 +286,7 @@ def test_workflow_generates_a_traceable_report_after_evidence_collection() -> No
 
 def test_workflow_falls_back_to_inconclusive_report_when_diagnosis_fails() -> None:
     workflow = InvestigationWorkflow(
-        OneEvidenceGateway(),
+        OneEvidenceProvider(),
         OneCheckPlanner(),
         InvestigationBudget(readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})),
         BrokenDiagnostician(),

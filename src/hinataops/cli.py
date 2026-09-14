@@ -21,7 +21,6 @@ from hinataops.agent_core.events import InvestigationEvent
 from hinataops.agent_core.llm import OpenAICompatibleStructuredOutputClient
 from hinataops.agent_core.models import Hypothesis, InvestigationReport, Observation
 from hinataops.agent_core.models import PlanningTrace
-from hinataops.agent_core.gateway import StreamableHttpToolGateway
 from hinataops.evaluation_runner import (
     DEFAULT_LLM_CONFIG_PATH,
     DEFAULT_MCP_URL,
@@ -29,6 +28,7 @@ from hinataops.evaluation_runner import (
     _require_llm_connection,
 )
 from hinataops.investigation_service import render_investigation_archive, run_readonly_investigation
+from hinataops.integrations.mcp_provider import McpToolProvider
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.investigation import (
     PYTHON_JUDGE_TASK_NO_RESULT,
 )
@@ -88,7 +88,7 @@ class LocalMcpServer(AbstractContextManager["LocalMcpServer"]):
                 raise RuntimeError(f"本地 MCP Server 启动失败，退出码: {self._process.returncode}")
             try:
                 await asyncio.wait_for(
-                    StreamableHttpToolGateway(self._mcp_url).list_tools(), timeout=1.0
+                    McpToolProvider(self._mcp_url).list_tools(), timeout=1.0
                 )
             except Exception:
                 await asyncio.sleep(_LOCAL_MCP_POLL_INTERVAL_SECONDS)
@@ -341,7 +341,7 @@ async def _investigate(args: argparse.Namespace, console: InvestigationConsole) 
 async def _is_mcp_available(mcp_url: str) -> bool:
     """检测已有 MCP 服务，避免自动模式误连到遗留进程或回收错误的生命周期。"""
     try:
-        await asyncio.wait_for(StreamableHttpToolGateway(mcp_url).list_tools(), timeout=1.0)
+        await asyncio.wait_for(McpToolProvider(mcp_url).list_tools(), timeout=1.0)
     except Exception:
         return False
     return True

@@ -17,7 +17,7 @@ from hinataops.agent_core.diagnosis import (
 )
 from hinataops.agent_core.evidence import EvidenceCollector
 from hinataops.agent_core.events import InvestigationEvent, InvestigationEventListener
-from hinataops.agent_core.gateway import ToolCatalog, ToolGateway, ToolGatewayError
+from hinataops.agent_core.tool_provider import ToolCatalog, ToolProvider, ToolProviderError
 from hinataops.agent_core.models import (
     IncidentRequest,
     InvestigationReport,
@@ -28,6 +28,7 @@ from hinataops.agent_core.models import (
 )
 from hinataops.agent_core.planner import InvestigationPlanner, PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget, InvestigationPolicyError
+from hinataops.tooling.contracts import ToolError
 
 
 class _WorkflowState(TypedDict):
@@ -74,20 +75,20 @@ class InvestigationRun:
 
 
 class InvestigationWorkflow:
-    """协调 Planner、预算策略和 MCP EvidenceCollector 的只读调查图。"""
+    """协调 Planner、预算策略和 Tool Provider 的只读调查图。"""
 
     def __init__(
         self,
-        gateway: ToolGateway,
+        provider: ToolProvider,
         planner: InvestigationPlanner,
         budget: InvestigationBudget,
         diagnostician: InvestigationDiagnostician | None = None,
         event_listener: InvestigationEventListener | None = None,
     ) -> None:
-        self._gateway = gateway
+        self._provider = provider
         self._planner = planner
         self._budget = budget
-        self._collector = EvidenceCollector(gateway)
+        self._collector = EvidenceCollector(provider)
         self._diagnostician = diagnostician or InconclusiveDiagnostician()
         self._event_listener = event_listener
         self._graph = self._build_graph()
@@ -146,11 +147,11 @@ class InvestigationWorkflow:
         return graph.compile()
 
     async def _load_catalog(self, state: _WorkflowState) -> dict[str, object]:
-        """在图开始时加载 MCP 当前公开能力，避免硬编码领域 Tool 名称。"""
+        """在图开始时加载 Provider 当前公开能力，避免硬编码领域 Tool 名称。"""
         try:
-            catalog = await ToolCatalog.load(self._gateway)
+            catalog = await ToolCatalog.load(self._provider)
         except Exception as error:
-            return {"stop_reason": f"无法加载 MCP Tool Catalog: {type(error).__name__}"}
+            return {"stop_reason": f"无法加载 Tool Catalog: {type(error).__name__}"}
         self._emit(InvestigationEvent(kind="catalog_loaded", detail=f"发现 {len(catalog.tools)} 个 Tool"))
         return {"catalog": catalog}
 
@@ -158,7 +159,7 @@ class InvestigationWorkflow:
         """让 Planner 基于现有证据选择下一轮检查，但不授予其执行权限。"""
         catalog = state["catalog"]
         if catalog is None:
-            return {"stop_reason": "MCP Tool Catalog 不可用"}
+            return {"stop_reason": "Tool Catalog 不可用"}
         if state["investigation_rounds"] > self._budget.max_rounds:
             return {"stop_reason": "已达到调查轮次预算"}
         if len(state["completed_calls"]) >= self._budget.max_tool_calls:
@@ -222,7 +223,7 @@ class InvestigationWorkflow:
         )
 
     def _authorize(self, state: _WorkflowState) -> dict[str, object]:
-        """逐项校验 Catalog、只读白名单、重复调用和预算，失败时不触碰 Gateway。"""
+        """逐项校验 Catalog、只读白名单、重复调用和预算，失败时不触碰 Provider。"""
         catalog = state["catalog"]
         if state["stop_reason"] is not None or catalog is None:
             return {}
@@ -243,7 +244,7 @@ class InvestigationWorkflow:
                 staged_calls.append(call)
                 if retry is not None:
                     retry_attempts.append(retry)
-        except (InvestigationPolicyError, ToolGatewayError) as error:
+        except (InvestigationPolicyError, ToolProviderError) as error:
             return {"stop_reason": str(error), "planned_calls": []}
         return {"retry_attempts": retry_attempts}
 
@@ -260,14 +261,25 @@ class InvestigationWorkflow:
         observations = list(state["observations"])
         for call, result in zip(calls, results, strict=True):
             if isinstance(result, Exception):
+                provider_error = (
+                    result
+                    if isinstance(result, ToolProviderError)
+                    else ToolProviderError("未预期的 Provider 调用失败")
+                )
                 observation = Observation(
-                    source="mcp",
+                    source="provider",
                     tool_name=call.name,
                     arguments=call.arguments,
                     observed_at=datetime.now(UTC),
-                    value={"error": type(result).__name__},
+                    value={},
                     summary=f"{call.name} 采集失败，未获得可用基础设施证据。",
                     reliability="failed",
+                    result_status="error",
+                    error=ToolError(
+                        kind=provider_error.kind,
+                        message=str(provider_error),
+                        retryable=provider_error.retryable,
+                    ),
                 )
                 observations.append(observation)
                 self._emit(InvestigationEvent(kind="tool_completed", observation=observation))
@@ -293,7 +305,7 @@ class InvestigationWorkflow:
         completed_calls: list[ToolCall],
         observations: list[Observation],
     ) -> RetryAttempt | None:
-        """只有最近同参调用的 MCP 错误明确标记可重试时，才允许第二次采证。"""
+        """只有最近同参调用的 Tool 错误明确标记可重试时，才允许第二次采证。"""
         for previous_call, observation in zip(
             reversed(completed_calls), reversed(observations), strict=True
         ):
@@ -314,7 +326,7 @@ class InvestigationWorkflow:
     def _retryable_fingerprints(
         completed_calls: list[ToolCall], observations: list[Observation]
     ) -> frozenset[str]:
-        """仅把带 MCP `retryable=true` 错误的最近观测授权为候选重试。"""
+        """仅把 Tool 错误明确标记可重试的最近观测授权为候选重试。"""
         return frozenset(
             call.fingerprint
             for call, observation in zip(completed_calls, observations, strict=True)
@@ -323,15 +335,11 @@ class InvestigationWorkflow:
 
     @staticmethod
     def _retryable_reason(observation: Observation) -> str | None:
-        """读取统一 metadata 的受控重试标记，不猜测普通失败是否适合重试。"""
-        metadata = observation.value.get("metadata")
-        if not isinstance(metadata, dict):
+        """读取结构化 Tool 错误的受控重试标记，不猜测普通失败是否适合重试。"""
+        error = observation.error
+        if error is None or not error.retryable:
             return None
-        error = metadata.get("error")
-        if not isinstance(error, dict) or error.get("retryable") is not True:
-            return None
-        kind = error.get("kind")
-        return str(kind) if isinstance(kind, str) and kind else "retryable_error"
+        return error.kind
 
     async def _diagnose(self, state: _WorkflowState) -> dict[str, object]:
         """在所有停止路径上构建报告；模型失败时返回确定性不确定结论。"""

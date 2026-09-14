@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 from mcp.server.fastmcp import FastMCP
 
@@ -10,6 +11,7 @@ from hinataops.actions.repository import ActionRepository
 from hinataops.actions.runtime import action_repository
 from hinataops.ops_mcp.config import EnvironmentConfig, load_environment_config
 from hinataops.ops_mcp.plugins import ToolsetContext, discover_toolsets
+from hinataops.tooling.contracts import ToolResult
 
 ConfigProvider = Callable[[], EnvironmentConfig]
 ActionRepositoryProvider = Callable[[], ActionRepository]
@@ -23,13 +25,18 @@ def _register_topology_tool(mcp: FastMCP, config_provider: ConfigProvider) -> No
         """返回一个已配置服务的拓扑事实。"""
         config = config_provider()
         target = config.service(service)
-        return {
-            "environment": config.environment.name,
-            "service": target.name,
-            "container": target.container,
-            "role": target.role,
-            "depends_on": target.depends_on,
-        }
+        return ToolResult(
+            status="success",
+            environment=config.environment.name,
+            source="topology",
+            observed_at=datetime.now(UTC),
+            data={
+                "service": target.name,
+                "container": target.container,
+                "role": target.role,
+                "depends_on": target.depends_on,
+            },
+        ).model_dump(mode="json")
 
 
 def create_server(

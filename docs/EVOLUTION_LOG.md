@@ -333,3 +333,41 @@ Toolset 等能力列为非目标。这符合最初控制范围、尽快完成真
 本次首先修正文档定位，没有声称当前代码已经生产可用。讨论确认后，项目进一步形成
 [V3 目标架构](ARCHITECTURE_V3.md)与[V3 迁移清单](V3_MIGRATION_CHECKLIST.md)，以可靠性、安全、可恢复性、
 可观测性和真实评测作为最小可信切片的验收依据。
+
+## E-012：M1 建立传输无关的 Tool 契约
+
+### 原因
+
+V2 中 `ToolGateway` 虽然使用了 Protocol，却仍然直接导入 MCP SDK；`GatewayToolResult` 只是裸字典，
+`EvidenceCollector` 还要解析 MCP 返回的 `metadata`。这使 Agent Core 与 MCP、FastMCP 和 AoiLearn 的结果
+格式发生隐式耦合，也让“成功、无数据、部分结果、失败”难以被统一处理。
+
+### 方法
+
+- 新增 `hinataops.tooling` 共享契约，定义 `ToolDefinition`、`ToolError` 和首版 `ToolResult`。
+- 将 Core 端口重命名为 `ToolProvider`，将 Catalog 移入 Provider 边界；删除旧的 `agent_core/gateway.py`。
+- 将 MCP Streamable HTTP 实现移动到 `integrations/mcp_provider.py`，只在该适配层暂时兼容 V2 metadata。
+- 根据完成审查修正边界语义：Topology 和 AoiLearn 只读 Tool 直接返回 V3 envelope，MySQL 空窗口
+  显式返回 `no_data`；采集失败不再携带空列表和零值占位数据。
+- V2 兼容不再根据字典非空猜测可用证据；带结构化错误的不完整返回保守转为 `error`。
+- Provider 异常统一转换为不携带业务数据的结构化错误 Observation，并增加状态、可靠性和
+  错误字段的一致性校验。
+- `EvidenceCollector` 改为直接消费 `ToolResult`，并在 `Observation` 中显式保留 `result_status` 与结构化错误。
+- 用状态不变量区分 `success`、`no_data`、`partial` 和 `error`；审批不进入调查 Tool 结果，而由后续动作状态机表达。
+- 迁移 Workflow、CLI、应用服务和现有测试中的旧 Gateway 命名，不保留未发布内部 API 的兼容别名。
+
+### 结果
+
+Agent Core 不再导入 MCP SDK，也不再读取 MCP `structuredContent` 或裸 `metadata`。Topology 和 AoiLearn 只读
+Tool 已使用标准 `ToolResult`，失败、空结果与真实观测数据之间有确定边界。MCP 仍可通过保守的
+V2 兼容适配器工作；后续增加 HTTP、Local 或 SDK Provider 时不需要修改 EvidenceCollector 或 Workflow。
+
+### 验证与边界
+
+新增 Tool 契约、Provider、MCP 适配和 EvidenceCollector 测试；完成审查后又增加了真实 MCP Tool
+envelope、占位数据失败、业务 `status` 冲突、公共 `invoke` 协议错误和 Observation 一致性回归测试。
+最终全量 115 项测试通过，并通过本地 Streamable HTTP MCP Server 对真实 AoiLearn MySQL 执行一次
+只读集成验证：15 分钟窗口无判题记录时返回 `no_data`，且完整保留查询窗口与空聚合结果。
+M1 首版尚未加入 Toolset ID、风险等级、调用 ID、Artifact 引用、Run 关联或完整执行观测，这些工作已在
+[V3 迁移清单](V3_MIGRATION_CHECKLIST.md)登记到 M2、M3、M4、M6 和 M8；V2 metadata 兼容层将在 M5 数据源
+Toolset 拆分时移除。

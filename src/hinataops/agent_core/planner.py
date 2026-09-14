@@ -7,7 +7,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
-from hinataops.agent_core.gateway import ToolCatalog
+from hinataops.agent_core.tool_provider import ToolCatalog
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 
 

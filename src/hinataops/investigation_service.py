@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 
 from hinataops.agent_core.events import InvestigationEventListener
-from hinataops.agent_core.gateway import StreamableHttpToolGateway
 from hinataops.agent_core.llm import (
     LlmInvestigationDiagnostician,
     LlmInvestigationPlanner,
     StructuredOutputClient,
 )
 from hinataops.agent_core.models import IncidentRequest
+from hinataops.integrations.mcp_provider import McpToolProvider
 from hinataops.agent_core.policy import InvestigationBudget
 from hinataops.agent_core.workflow import InvestigationRun, InvestigationWorkflow
 
@@ -29,7 +29,7 @@ async def run_readonly_investigation(
 ) -> InvestigationRun:
     """运行一次受预算的只读调查；预期根因只可由评测调用方额外传入。"""
     workflow = InvestigationWorkflow(
-        StreamableHttpToolGateway(mcp_url),
+        McpToolProvider(mcp_url),
         LlmInvestigationPlanner(client, readonly_tool_names=readonly_tool_names),
         InvestigationBudget(
             readonly_tool_names=readonly_tool_names,

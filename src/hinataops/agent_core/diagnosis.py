@@ -14,7 +14,7 @@ class DiagnosisError(RuntimeError):
 
 @dataclass(frozen=True)
 class DiagnosisContext:
-    """诊断器可见的调查终态；不包含 Gateway、凭证或写操作能力。"""
+    """诊断器可见的调查终态；不包含 Tool Provider、凭证或写操作能力。"""
 
     incident: IncidentRequest
     observations: list[Observation]

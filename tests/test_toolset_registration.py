@@ -1,13 +1,22 @@
+import asyncio
 from pathlib import Path
 
 import pytest
+from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
+from hinataops.ops_mcp.adapters import SshCommandError
 from hinataops.ops_mcp.config import load_environment_config
 from hinataops.ops_mcp.config import ActionSettings
-from hinataops.ops_mcp.plugins import discover_toolsets
+from hinataops.ops_mcp.contracts import new_metadata
+from hinataops.ops_mcp.plugins import ToolsetContext, discover_toolsets
 from hinataops.ops_mcp.policy import ToolsetConfig
 from hinataops.ops_mcp.server import create_server
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.pipeline_summary import (
+    MysqlJudgePipelineSummary,
+)
+from hinataops.ops_mcp.toolsets.aoi_learn_judge.plugin import AoiLearnJudgePlugin
+from hinataops.tooling.contracts import ToolResult
 
 
 def test_server_exposes_only_enabled_domain_toolset() -> None:
@@ -80,3 +89,76 @@ def test_server_rejects_invalid_plugin_specific_configuration() -> None:
 
     with pytest.raises(ValidationError):
         create_server(lambda: invalid_plugin_config)
+
+
+def test_topology_tool_returns_v3_tool_result() -> None:
+    config = load_environment_config(Path("config/environments/aoi-local.example.toml"))
+    server = create_server(lambda: config)
+
+    raw_result = asyncio.run(
+        server._tool_manager.get_tool("topology_get_service").fn("server")
+    )
+    result = ToolResult.model_validate(raw_result)
+
+    assert result.status == "success"
+    assert result.environment == "aoi-local"
+    assert result.source == "topology"
+    assert result.data["container"] == "aoi-learn-server-1"
+
+
+def test_aoi_observation_tool_returns_error_without_placeholder_data(monkeypatch) -> None:
+    class FailingToolset:
+        async def get_container_runtime(self):
+            raise SshCommandError("ssh_command_timeout", "SSH command timed out")
+
+    config = load_environment_config(Path("config/environments/aoi-local.example.toml"))
+    plugin = AoiLearnJudgePlugin()
+    monkeypatch.setattr(plugin, "_toolset", lambda current: FailingToolset())
+    server = FastMCP("fixture")
+    plugin._register_observation_tools(
+        server,
+        ToolsetContext(lambda: config, lambda: None),
+    )
+
+    raw_result = asyncio.run(
+        server._tool_manager.get_tool("aoi_judge_get_container_runtime").fn()
+    )
+    result = ToolResult.model_validate(raw_result)
+
+    assert result.status == "error"
+    assert result.data == {}
+    assert result.error is not None
+    assert result.error.kind == "ssh_command_timeout"
+    assert result.error.retryable is True
+
+
+def test_aoi_pipeline_tool_marks_empty_window_as_no_data(monkeypatch) -> None:
+    class EmptyPipelineToolset:
+        async def get_pipeline_summary(self, window_minutes: int):
+            return MysqlJudgePipelineSummary(
+                metadata=new_metadata("aoi-local", "mysql"),
+                window_minutes=window_minutes,
+                task_statuses=[],
+                outbox_statuses=[],
+            )
+
+    config = load_environment_config(Path("config/environments/aoi-local.example.toml"))
+    plugin = AoiLearnJudgePlugin()
+    monkeypatch.setattr(plugin, "_toolset", lambda current: EmptyPipelineToolset())
+    server = FastMCP("fixture")
+    plugin._register_observation_tools(
+        server,
+        ToolsetContext(lambda: config, lambda: None),
+    )
+
+    raw_result = asyncio.run(
+        server._tool_manager.get_tool("aoi_judge_get_pipeline_summary").fn(15)
+    )
+    result = ToolResult.model_validate(raw_result)
+
+    assert result.status == "no_data"
+    assert result.data == {
+        "window_minutes": 15,
+        "task_statuses": [],
+        "outbox_statuses": [],
+    }

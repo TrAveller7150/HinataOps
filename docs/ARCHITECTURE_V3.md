@@ -193,7 +193,7 @@ Core 依赖统一 Provider 契约：
 ```python
 class ToolProvider(Protocol):
     async def discover(self) -> list[ToolDefinition]: ...
-    async def invoke(self, request: ToolRequest) -> StructuredToolResult: ...
+    async def invoke(self, request: ToolRequest) -> ToolResult: ...
 ```
 
 首个实现为 MCP Provider；后续只在确有价值时增加 Local、HTTP 或 Cloud SDK Provider。Executor 统一处理超时、
@@ -316,17 +316,19 @@ Toolset。它用于验证扩展边界，不要求立即达到 AoiLearn 的接入
 
 ## 8. 可靠性与失败语义
 
-统一 `StructuredToolResult` 至少包含：
+调查 Tool 的统一 `ToolResult` 最终至少包含：
 
 ```text
-status: success | no_data | partial | error | approval_required
+status: success | no_data | partial | error
 data | artifact_ref
 summary
 source, observed_at, time_range
-reliability
 error: kind, retryable, safe_message
 elapsed_ms, output_bytes
 ```
+
+M1 先落地不含 Artifact 和运行审计字段的首版契约，后续由 M2～M6 按职责扩展。`approval_required` 不属于
+调查 Tool 结果；需要审批的写操作进入独立 `ActionProposal → awaiting_approval → execute → verify` 状态机。
 
 必须区分：
 
@@ -336,7 +338,7 @@ elapsed_ms, output_bytes
 - Tool 配置或前置条件不满足；
 - 命令瞬时超时；
 - 参数被策略拒绝；
-- 需要人工审批。
+- 动作等待人工审批（由 Action Workflow 表达，不伪装为 Tool 查询结果）。
 
 重试只处理声明为瞬时、幂等且仍在预算内的失败。每次尝试独立留档，不能用最终成功覆盖先前异常。
 

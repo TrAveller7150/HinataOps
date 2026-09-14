@@ -12,6 +12,7 @@ from hinataops.agent_core.models import (
     ToolCall,
 )
 from hinataops.agent_core.policy import InvestigationBudget, InvestigationPolicyError
+from hinataops.tooling.contracts import ToolError
 
 
 def _incident() -> IncidentRequest:
@@ -87,6 +88,24 @@ def test_report_rejects_hypothesis_evidence_that_was_not_collected() -> None:
             primary_hypothesis_id=hypothesis.hypothesis_id,
             conclusion="Worker 无法消费 Redis Stream。",
         )
+
+
+def test_observation_rejects_inconsistent_result_status() -> None:
+    values = _observation().model_dump()
+    values.update(reliability="failed", result_status="error", value={})
+
+    with pytest.raises(ValidationError, match="error"):
+        Observation.model_validate(values)
+
+    values["error"] = ToolError(
+        kind="provider_error",
+        message="Provider 调用失败",
+        retryable=False,
+    )
+    observation = Observation.model_validate(values)
+
+    assert observation.value == {}
+    assert observation.error.kind == "provider_error"
 
 
 def test_budget_rejects_write_tools_duplicate_calls_and_exhausted_budget() -> None:

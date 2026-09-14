@@ -1,4 +1,4 @@
-"""OpenAI-compatible LLM Planner Adapter；不向模型暴露 MCP Client 或写操作能力。"""
+"""OpenAI-compatible LLM Planner Adapter；不向模型暴露 Tool Provider 或写操作能力。"""
 
 from __future__ import annotations
 

@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from hinataops.agent_core.gateway import GatewayToolResult, ToolCatalog, ToolDescriptor
 from hinataops.agent_core.llm import (
     LlmInvestigationPlanner,
     ModelPlanningDecision,
@@ -13,7 +12,9 @@ from hinataops.agent_core.llm import (
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 from hinataops.agent_core.planner import PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget
+from hinataops.agent_core.tool_provider import ToolCatalog
 from hinataops.agent_core.workflow import InvestigationWorkflow
+from hinataops.tooling.contracts import ToolDefinition, ToolResult
 
 
 class FakeStructuredOutputClient:
@@ -45,40 +46,40 @@ class FakeStructuredOutputClient:
         return ValidatedStructuredOutput(value=value, attempts=1)
 
 
-class CatalogOnlyGateway:
-    """验证 Planner 失败时工作流不会把请求发送至 MCP Gateway。"""
+class CatalogOnlyProvider:
+    """验证 Planner 失败时工作流不会把请求发送至 Tool Provider。"""
 
     def __init__(self) -> None:
         self.calls: list[ToolCall] = []
 
-    async def list_tools(self) -> list[ToolDescriptor]:
+    async def list_tools(self) -> list[ToolDefinition]:
         return [
-            ToolDescriptor(
+            ToolDefinition(
                 name="aoi_judge_get_stream_summary",
                 description="Redis Stream 摘要",
                 input_schema={"type": "object"},
             ),
-            ToolDescriptor(
+            ToolDefinition(
                 name="docker_restart_service",
                 description="重启服务",
                 input_schema={"type": "object"},
             ),
         ]
 
-    async def call_tool(self, call: ToolCall) -> GatewayToolResult:
+    async def invoke(self, call: ToolCall) -> ToolResult:
         self.calls.append(call)
-        raise AssertionError("非法 LLM 决策不能到达 MCP Gateway")
+        raise AssertionError("非法 LLM 决策不能到达 Tool Provider")
 
 
 def _context() -> PlanningContext:
     catalog = ToolCatalog(
         [
-            ToolDescriptor(
+            ToolDefinition(
                 name="aoi_judge_get_stream_summary",
                 description="Redis Stream 摘要",
                 input_schema={"type": "object"},
             ),
-            ToolDescriptor(
+            ToolDefinition(
                 name="docker_restart_service",
                 description="重启服务",
                 input_schema={"type": "object"},
@@ -205,9 +206,9 @@ def test_workflow_stops_before_mcp_when_llm_selects_unallowed_tool() -> None:
     planner = LlmInvestigationPlanner(
         client, readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})
     )
-    gateway = CatalogOnlyGateway()
+    provider = CatalogOnlyProvider()
     workflow = InvestigationWorkflow(
-        gateway,
+        provider,
         planner,
         InvestigationBudget(readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})),
     )
@@ -216,7 +217,7 @@ def test_workflow_stops_before_mcp_when_llm_selects_unallowed_tool() -> None:
         workflow.run(IncidentRequest(query="判题卡住", target_environment="aoi-local"))
     )
 
-    assert gateway.calls == []
+    assert provider.calls == []
     assert "Planner 输出不可用" in result.stop_reason
     assert "调查决策契约" in result.stop_reason
     assert result.planning_traces[0].status == "failed"

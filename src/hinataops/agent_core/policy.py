@@ -8,7 +8,7 @@ from hinataops.agent_core.models import ToolCall
 
 
 class InvestigationPolicyError(ValueError):
-    """Planner 请求越过调查预算或 Tool 权限边界时抛出。"""
+    """调查请求越过预算或 Tool 权限边界时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class InvestigationBudget:
         investigation_round: int,
         retryable_fingerprints: frozenset[str] = frozenset(),
     ) -> None:
-        """验证调用，不执行 Tool；调用方仅在成功后才能进入 MCP Gateway。"""
+        """验证调用，不执行 Tool；调用方仅在成功后才能进入 Provider。"""
         if investigation_round > self.max_rounds:
             raise InvestigationPolicyError("已达到调查轮次预算")
         if call.name not in self.readonly_tool_names:

@@ -85,25 +85,51 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 
 目标：不改变调查行为，先让 Core 不再把 Tool 等同于 MCP。
 
+状态：已完成。首版契约和 Provider 已落地，V2 调查路径保持可运行；后续增强项按范围转移登记表执行。
+
 ### 实施
 
-- [ ] 定义 `ToolDefinition`：稳定 ID、名称、描述、JSON Schema、Toolset ID、风险等级和结果 Schema 版本。
-- [ ] 定义 `ToolRequest`：`run_id`、`call_id`、Tool ID、参数、截止时间和调用上下文。
-- [ ] 定义 `StructuredToolResult`：`success/no_data/partial/error/approval_required`、安全摘要、数据或 Artifact 引用、
-      时间范围、可靠性、耗时、大小和结构化错误。
-- [ ] 将 `ToolGateway` 的 Core 端口改名/演进为 `ToolProvider`，保持 `discover/invoke` 两个最小方法。
-- [ ] 将 `StreamableHttpToolGateway` 包装为 `McpToolProvider`；先保留兼容别名，避免一次修改所有调用方。
-- [ ] 把现有 MCP metadata 和异常映射到 `StructuredToolResult`，明确 `no_data` 与 `error`。
-- [ ] 为 Schema 不兼容、重复 Tool ID、未知 Tool、MCP 错误、无数据、部分结果和瞬时超时补契约测试。
+- [x] 新建共享 `tooling` 契约，供 Agent Core 与 MCP Integration 共同依赖，避免任一方反向依赖另一方。
+- [x] 定义首版 `ToolDefinition`：名称、描述和输入 JSON Schema。
+- [x] 继续使用当前只含名称与参数的 `ToolCall`；移除其 Planner/MCP 专属注释，但本阶段不增加运行审计字段。
+- [x] 定义首版 `ToolResult`：Schema 版本、`success/no_data/partial/error`、环境、来源、观测时间、数据、警告和
+      结构化错误。
+- [x] 为 `ToolResult` 增加状态不变量：成功/无数据不能携带错误，错误必须携带 `ToolError`，部分结果必须明确
+      警告或错误。
+- [x] 将 Core 端口直接重命名为 `ToolProvider`，保持 `list_tools/invoke` 两个最小方法。
+- [x] 将 MCP SDK、Streamable HTTP 与协议解析移动到 `integrations/mcp_provider.py`，实现 `McpToolProvider`。
+- [x] 直接迁移仓库内调用方，不保留未发布内部 API 的 Gateway 兼容别名。
+- [x] 让现有只读 MCP Tool 返回/映射到首版 `ToolResult`，明确区分无数据、部分数据和无可用结果。
+- [x] 让 `EvidenceCollector` 只消费 `ToolResult`，不再读取 MCP `structuredContent` 或约定的裸 `metadata` 字典。
+- [x] `Observation` 显式保留 `result_status` 与结构化 Tool 错误；重试策略读取该字段，不再反向解析原始结果。
+- [x] 为状态组合、Schema 不兼容、未知 Tool、MCP 协议错误、无数据、部分结果、失败和瞬时超时补契约测试。
+
+### 从原 M1 转移的工作
+
+缩小 M1 只改变顺序，下列目标仍保留在后续阶段：
+
+| 原 M1 内容 | 处理决定 | 承接阶段 |
+| --- | --- | --- |
+| Tool 稳定 ID、Toolset ID、风险等级、结果 Schema 声明 | 与 Manifest 和 Catalog 一起设计 | M2 |
+| `call_id`、调用截止时间和执行上下文 | 由 Tool Executor 和原生调查循环创建 | M3 |
+| Artifact 引用、查询时间范围和输出字节数 | 与 Artifact/Evidence 模型一起加入 `ToolResult` 新版本 | M4 |
+| `run_id` 与完整调用关联 | Run Repository 和持久化事件建立后加入 | M6 |
+| `approval_required` | 从调查 Tool 契约取消，由独立动作状态机表达 | M7 |
+| Tool/模型耗时、Token 与 Span 维度 | M3 先记录执行耗时，M8 接入完整可观测性 | M3、M8 |
 
 ### 主要文件
 
-- 重构：`src/hinataops/agent_core/gateway.py`
+- 删除：`src/hinataops/agent_core/gateway.py`
 - 重构：`src/hinataops/agent_core/evidence.py`
-- 演进：`src/hinataops/ops_mcp/contracts.py`
-- 新增或就地定义：通用 Tool 契约模块
+- 新增：`src/hinataops/tooling/contracts.py`
+- 新增：`src/hinataops/agent_core/tool_provider.py`
+- 新增：`src/hinataops/integrations/mcp_provider.py`
+- 重构：`src/hinataops/ops_mcp/server.py`
+- 重构：`src/hinataops/ops_mcp/toolsets/aoi_learn_judge/plugin.py`
 
-验收：现有 V2 Workflow 在不理解 MCP 类型的情况下完成原有测试；真实 MCP 调查结果与基线等价。
+验收：现有 V2 Workflow 在不理解 MCP 类型的情况下完成原有测试；MCP 适配、V2 metadata 转换和结果状态契约
+测试通过。Topology 与 AoiLearn 只读 Tool 已返回标准 envelope；V2 metadata 仅作为 MCP Provider 中的
+保守兼容路径，待 M5 移除。
 
 ## 5. 阶段 M2：Toolset Manifest、Registry 与前置条件
 
@@ -112,6 +138,7 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 ### 实施
 
 - [ ] 定义 `ToolsetManifest` 和版本规则。
+- [ ] 为 Tool 定义稳定限定 ID、所属 Toolset、风险等级和结果 Schema 声明。
 - [ ] 定义 Toolset 状态：`enabled/disabled/unavailable/misconfigured/degraded`。
 - [ ] Plugin 暴露 Manifest、配置 Schema、Tool 定义和前置条件，不只接收 `FastMCP.register`。
 - [ ] MCP Server Adapter 根据通用定义发布 Tool；传输层不拥有领域知识。
@@ -139,6 +166,7 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 - [ ] `ModelGateway.complete_with_tools` 统一供应商 Tool Call、结束原因、用量和安全错误元数据。
 - [ ] 为不支持严格 Tool Calling 的模型明确标记 capability unavailable，不静默退回文本 JSON Planner。
 - [ ] 实现显式 `InvestigationLoop`：构建上下文、调用模型、授权、执行 Tool、追加结果、判断结束。
+- [ ] Tool Executor 为每次调用创建 `call_id`，传递截止时间和受限执行上下文，并记录执行耗时。
 - [ ] 定义统一 `RunLimits`，取代分散的 `max_rounds/max_tool_calls` 特例。
 - [ ] 支持无依赖只读调用并行执行；相同资源或敏感调用按策略串行。
 - [ ] 达到步骤预算后关闭 Tool，执行一次报告合成，不再调用收尾 Planner。
@@ -154,8 +182,8 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 - 演进：`src/hinataops/agent_core/events.py`
 - 迁移后删除：`src/hinataops/agent_core/planner.py`
 
-验收：同一回放 Fixture 下不再出现 Planner JSON 解析失败；Tool 仍必须经过本地策略；报告引用校验保持有效；
-正例和负例不低于 M0 基线。
+验收：调查过程中不再存在 Planner JSON 解析路径；Tool 仍必须经过本地策略；报告引用校验保持有效；完成首轮
+V3 健康负例与受控正例，并把结果作为后续阶段的 M3 调查质量基线。
 
 回退条件：若目标模型的原生 Tool Calling 在契约测试中不稳定，保留 V2 Feature Flag 并先修 Model Adapter，
 不能把供应商字段补丁重新写入调查循环。
@@ -167,6 +195,7 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 ### 实施
 
 - [ ] 定义 `ArtifactRef`、内容哈希、媒体类型、大小、来源和保留策略。
+- [ ] 将 Artifact 引用、查询时间范围和输出字节数加入新版 `ToolResult`，保持旧 Schema 的显式迁移路径。
 - [ ] 实现本地文件 Artifact Store；元数据由 Repository 保存，接口允许未来替换对象存储。
 - [ ] 将 `Observation` 迁移为 `Evidence`；大字段只保留 Artifact 引用和有界摘要。
 - [ ] 把 Aoi Presenter 的能力重构为随 Toolset 注册的 Result Transformer/Projector。
@@ -230,6 +259,7 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 - [ ] 建立 Incident/Run/Event Repository，SQLite 为当前实现。
 - [ ] 将同步 `InvestigationEventListener` 演进为追加式 Event Store + Subscriber。
 - [ ] Event Envelope 包含 `event_id/run_id/sequence/type/schema_version/timestamp/payload`。
+- [ ] 将 `run_id` 关联到每次 Tool 调用、Artifact、Evidence 与模型步骤，形成完整调用链。
 - [ ] `InvestigationApplicationService` 成为 CLI 与 API 唯一用例入口。
 - [ ] 增加最小 FastAPI：创建 Run、查询 Run、SSE 事件、取消调查。
 - [ ] CLI 改为订阅同一事件协议；本地自动启动 MCP 仅是 CLI 开发便利设施。
@@ -254,6 +284,8 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 ### 实施
 
 - [ ] 报告只能产生 `ActionProposal`，不能直接调用写 Tool。
+- [ ] 用 `awaiting_approval/approved/rejected` 等动作状态表达审批，不向调查 `ToolResult` 增加
+      `approval_required`。
 - [ ] Proposal 包含依据 Evidence、目标、参数、风险、前置条件、验证方式和回退说明。
 - [ ] Policy Engine 确定性校验动作类型、环境、服务和审批要求。
 - [ ] 复用现有审批指纹、原子 claim 和状态转换；增加操作者与审计上下文。
@@ -287,7 +319,7 @@ M0 不再重新调用模型、注入故障、制作 V2 Planner Fixture 或统计
 - [ ] 输出 Top-1、Evidence Coverage、无依据断言、重复调用、完成率、Token、延迟和费用。
 - [ ] 用 OpenTelemetry 记录 Run、模型步骤、Tool、外部依赖、压缩和动作 Span。
 - [ ] 为第二 Environment Pack 运行至少一个只读调查，证明 Core 无改动。
-- [ ] 比较 V3 与 M0 基线，并把回归阈值接入测试或 CI。
+- [ ] 以 M3 建立的首个原生 Tool Calling 基线为起点比较后续阶段，并把回归阈值接入测试或 CI。
 - [ ] 更新演进日志，记录未解决问题和后续是否需要 Runbook RAG。
 
 验收：V3 不再出现 Planner JSON 契约失败；关键证据覆盖不低于基线；没有新增未授权调用；第二接入通过；真实

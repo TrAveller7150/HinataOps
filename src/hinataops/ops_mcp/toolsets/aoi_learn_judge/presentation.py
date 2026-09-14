@@ -85,11 +85,8 @@ class AoiLearnJudgeEvidencePresenter:
 
     @staticmethod
     def _failure_line(observation: Observation) -> str:
-        error = observation.value.get("metadata")
-        if isinstance(error, dict) and isinstance(error.get("error"), dict):
-            message = error["error"].get("message")
-            if isinstance(message, str):
-                return f"观测不完整：{message}"
+        if observation.error is not None:
+            return f"观测不完整：{observation.error.message}"
         return "观测不完整，未获得可用指标。"
 
 
