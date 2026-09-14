@@ -12,9 +12,10 @@ import sys
 from time import monotonic
 from typing import Sequence
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from hinataops.agent_core.events import InvestigationEvent
 from hinataops.agent_core.llm import OpenAICompatibleStructuredOutputClient
@@ -22,12 +23,10 @@ from hinataops.agent_core.models import Hypothesis, InvestigationReport, Observa
 from hinataops.agent_core.models import PlanningTrace
 from hinataops.agent_core.gateway import StreamableHttpToolGateway
 from hinataops.evaluation_runner import (
-    DEEPSEEK_BASE_URL,
-    DEEPSEEK_MODEL,
     DEFAULT_LLM_CONFIG_PATH,
     DEFAULT_MCP_URL,
     _configure_utf8_output,
-    _require_api_key,
+    _require_llm_connection,
 )
 from hinataops.investigation_service import render_investigation_archive, run_readonly_investigation
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.investigation import (
@@ -130,6 +129,10 @@ class InvestigationConsole:
             self._console.print(
                 f"[yellow]模型规划输出不可用：{event.detail}；将根据已采集证据生成报告。[/yellow]"
             )
+        elif event.kind == "diagnosis_failed" and event.detail is not None:
+            self._console.print(
+                f"[yellow]模型诊断输出不可用：{event.detail}；已降级为事实性不确定报告。[/yellow]"
+            )
 
     def info(self, message: str) -> None:
         """显示不包含基础设施原始数据的 CLI 状态提示。"""
@@ -139,16 +142,19 @@ class InvestigationConsole:
         """展示最终人类报告；完整可审查 JSON 保留在运行记录文件中。"""
         report = run.report
         status = "已形成诊断" if report.status == "diagnosed" else "未能确认根因"
-        table = Table.grid(padding=(0, 1))
-        table.add_column(style="bold")
-        table.add_column()
-        table.add_row("调查状态", status)
-        table.add_row("结束方式", self._stop_reason(run.stop_reason))
-        table.add_row("结论", report.conclusion)
+        lines = [
+            self._report_line("调查状态", status),
+            self._report_line("结束方式", self._stop_reason(run.stop_reason)),
+        ]
+        if run.diagnosis_error is not None:
+            lines.append(self._report_line("诊断降级原因", run.diagnosis_error))
+        lines.append(self._report_line("结论", report.conclusion))
         if report.recommended_action is not None:
-            table.add_row("建议操作", report.recommended_action)
-        table.add_row("完整记录", str(run_file))
-        self._console.print(Panel(table, title="HinataOps 调查报告", border_style="green"))
+            lines.append(self._report_line("建议操作", report.recommended_action))
+        lines.append(self._report_line("完整记录", str(run_file)))
+        self._console.print(
+            Panel(Group(*lines), title="HinataOps 调查报告", border_style="green")
+        )
         self._render_planning_trace(run.planning_traces)
         self._render_hypotheses(report)
 
@@ -159,14 +165,14 @@ class InvestigationConsole:
         table = Table(show_header=True, header_style="bold", expand=True)
         table.add_column("轮次", width=6)
         table.add_column("状态", width=12)
-        table.add_column("可审计决策摘要", ratio=3)
-        table.add_column("选择的检查", ratio=2)
+        table.add_column("可审计决策摘要", ratio=3, overflow="fold")
+        table.add_column("选择的检查", ratio=2, overflow="fold")
         for trace in traces:
             calls = "、".join(self._tool_label(call.name) for call in trace.tool_calls) or "无"
             table.add_row(
                 str(trace.investigation_round),
                 self._trace_status(trace.status),
-                trace.summary,
+                self._trace_summary(trace),
                 calls,
             )
         self._console.print(Panel(table, title="调查决策轨迹", border_style="cyan"))
@@ -179,8 +185,8 @@ class InvestigationConsole:
         observations = {item.evidence_id: item for item in report.observations}
         table = Table(show_header=True, header_style="bold", expand=True)
         table.add_column("角色", width=16)
-        table.add_column("候选根因", ratio=2)
-        table.add_column("证据与待补充信息", ratio=3)
+        table.add_column("候选根因", ratio=2, overflow="fold")
+        table.add_column("证据与待补充信息", ratio=3, overflow="fold")
         for hypothesis in report.hypotheses:
             table.add_row(
                 self._hypothesis_role(hypothesis, report),
@@ -231,6 +237,20 @@ class InvestigationConsole:
         return {"planned": "已规划", "finished": "主动结束", "failed": "规划失败"}[status]
 
     @staticmethod
+    def _report_line(label: str, value: str) -> Text:
+        """报告区使用可折行文本，避免长路径或结论压缩整张二维表。"""
+        return Text.assemble((f"{label} ", "bold"), value)
+
+    @staticmethod
+    def _trace_summary(trace: PlanningTrace) -> str:
+        """保留可兼容字段的审计痕迹，提示人工这是格式恢复而非模型新结论。"""
+        return (
+            trace.summary
+            if trace.compatibility_note is None
+            else f"{trace.summary}\n格式兼容：{trace.compatibility_note}"
+        )
+
+    @staticmethod
     def _tool_label(tool_name: str) -> str:
         return _TOOL_LABELS.get(tool_name, tool_name)
 
@@ -272,13 +292,14 @@ def _default_run_file() -> Path:
 async def _investigate(args: argparse.Namespace, console: InvestigationConsole) -> Path:
     """运行人工事故画像，并根据是否指定 MCP URL 决定 Server 生命周期归属。"""
     run_file = args.output_file or _default_run_file()
-    api_key = _require_api_key(args.llm_config)
+    connection = _require_llm_connection(args.llm_config)
     profile = PYTHON_JUDGE_TASK_NO_RESULT
     client = OpenAICompatibleStructuredOutputClient(
-        model=DEEPSEEK_MODEL,
-        api_key=api_key,
-        base_url=DEEPSEEK_BASE_URL,
-        response_format_mode="json_object",
+        model=connection.model,
+        api_key=connection.api_key,
+        base_url=connection.base_url,
+        response_format_mode=connection.response_format_mode,
+        max_tokens=connection.max_tokens,
     )
     if args.mcp_url is not None:
         console.info(f"使用外部 MCP Server：{args.mcp_url}")
@@ -288,6 +309,7 @@ async def _investigate(args: argparse.Namespace, console: InvestigationConsole) 
             incident=profile.new_incident(),
             readonly_tool_names=profile.readonly_tool_names,
             max_tool_calls=profile.max_tool_calls,
+            max_rounds=profile.max_rounds,
             event_listener=console.event_listener,
         )
     else:
@@ -304,11 +326,12 @@ async def _investigate(args: argparse.Namespace, console: InvestigationConsole) 
                 incident=profile.new_incident(),
                 readonly_tool_names=profile.readonly_tool_names,
                 max_tool_calls=profile.max_tool_calls,
+                max_rounds=profile.max_rounds,
                 event_listener=console.event_listener,
             )
     run_file.parent.mkdir(parents=True, exist_ok=True)
     run_file.write_text(
-        f"{render_investigation_archive(model=DEEPSEEK_MODEL, profile_id=profile.profile_id, run=run)}\n",
+        f"{render_investigation_archive(model=connection.model, profile_id=profile.profile_id, run=run)}\n",
         encoding="utf-8",
     )
     console.render_report(run_file=run_file, run=run)

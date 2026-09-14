@@ -1,0 +1,12 @@
+# OpenAI-compatible 模型连接示例。实际密钥写入被 Git 忽略的 llm.local.toml，或使用 HINATAOPS_LLM_API_KEY。
+[llm]
+provider = "deepseek"
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com"
+api_key = "replace-with-local-secret"
+
+# 可选值：json_schema（原生严格 Schema）、json_object（API JSON 模式）、prompted_json（不发送 response_format）。
+response_format_mode = "json_object"
+
+# 诊断输出可能包含模型推理与嵌套报告，默认使用 8192；可按供应商限制下调。
+max_tokens = 8192

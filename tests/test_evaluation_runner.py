@@ -9,6 +9,7 @@ from hinataops.evaluation_runner import (
     _require_api_key,
 )
 from hinataops import evaluation_runner
+from hinataops.llm_config import load_llm_connection
 
 
 def test_runner_uses_default_local_mcp_url() -> None:
@@ -37,6 +38,28 @@ def test_runner_reads_api_key_from_ignored_local_toml(tmp_path) -> None:
     config_path.write_text('[deepseek]\napi_key = "test-key"\n', encoding="utf-8")
 
     assert _load_api_key_from_file(config_path) == "test-key"
+
+
+def test_generic_llm_config_selects_provider_output_capability(tmp_path) -> None:
+    config_path = tmp_path / "llm.local.toml"
+    config_path.write_text(
+        """[llm]
+provider = "openai-compatible-provider"
+model = "example-model"
+base_url = "https://example.invalid/v1"
+api_key = "test-key"
+response_format_mode = "prompted_json"
+max_tokens = 4096
+""",
+        encoding="utf-8",
+    )
+
+    connection = load_llm_connection(config_path)
+
+    assert connection.provider == "openai-compatible-provider"
+    assert connection.model == "example-model"
+    assert connection.response_format_mode == "prompted_json"
+    assert connection.max_tokens == 4096
 
 
 def test_runner_configures_utf8_for_console_streams(monkeypatch: pytest.MonkeyPatch) -> None:

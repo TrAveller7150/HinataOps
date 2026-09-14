@@ -23,6 +23,7 @@ async def run_readonly_investigation(
     incident: IncidentRequest,
     readonly_tool_names: frozenset[str],
     max_tool_calls: int,
+    max_rounds: int = 3,
     event_listener: InvestigationEventListener | None = None,
     allowed_cause_codes: frozenset[str] = frozenset(),
 ) -> InvestigationRun:
@@ -33,6 +34,7 @@ async def run_readonly_investigation(
         InvestigationBudget(
             readonly_tool_names=readonly_tool_names,
             max_tool_calls=max_tool_calls,
+            max_rounds=max_rounds,
         ),
         LlmInvestigationDiagnostician(client, allowed_cause_codes=allowed_cause_codes),
         event_listener=event_listener,
@@ -50,6 +52,7 @@ def render_investigation_archive(*, model: str, profile_id: str, run: Investigat
         "completed_tool_calls": [call.model_dump(mode="json") for call in run.completed_calls],
         "retry_attempts": [item.model_dump(mode="json") for item in run.retry_attempts],
         "planning_trace": [item.model_dump(mode="json") for item in run.planning_traces],
+        "diagnosis_error": run.diagnosis_error,
         "report": run.report.model_dump(mode="json"),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2, default=str)

@@ -24,6 +24,7 @@ class PlanningDecision(BaseModel):
     decision_summary: str = Field(
         default="脚本化 Planner 未提供决策摘要。", min_length=1, max_length=1_000
     )
+    compatibility_note: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def validate_decision(self) -> "PlanningDecision":
@@ -44,6 +45,8 @@ class PlanningContext:
     observations: list[Observation]
     completed_calls: list[ToolCall]
     investigation_round: int
+    remaining_tool_calls: int = 0
+    remaining_evidence_rounds: int = 0
 
 
 class InvestigationPlanner(Protocol):

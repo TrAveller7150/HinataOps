@@ -16,6 +16,7 @@ class InvestigationProfile:
     target_environment: str
     readonly_tool_names: frozenset[str]
     max_tool_calls: int
+    max_rounds: int
 
     def new_incident(self) -> IncidentRequest:
         """创建本次调查专属的 Incident，避免复用评测样例中的固定 ID。"""
@@ -34,6 +35,7 @@ PYTHON_JUDGE_TASK_NO_RESULT = InvestigationProfile(
             "aoi_judge_get_pipeline_summary",
         }
     ),
-    # 预留第五次调用：前四次采证后，模型仍有机会主动结束，而不是被预算强制截断。
-    max_tool_calls=5,
+    # 最多四批采证；采证完成后，工作流允许一次不执行 Tool 的收尾决策。
+    max_tool_calls=7,
+    max_rounds=4,
 )

@@ -42,6 +42,7 @@ class PlanningTrace(BaseModel):
     summary: str = Field(min_length=1, max_length=1_000)
     tool_calls: list[ToolCall] = Field(default_factory=list, max_length=2)
     finish_reason: str | None = Field(default=None, max_length=1_000)
+    compatibility_note: str | None = Field(default=None, max_length=500)
 
 
 class Observation(BaseModel):

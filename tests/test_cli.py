@@ -1,3 +1,5 @@
+from io import StringIO
+
 from rich.console import Console
 
 from hinataops.agent_core.models import Hypothesis, IncidentRequest, InvestigationReport
@@ -94,3 +96,31 @@ def test_console_renders_inconclusive_candidate_hypothesis() -> None:
     assert "模型假设评估" in output[0]
     assert "Python Worker 不可用" in output[0]
     assert "预算受限结束" in output[0]
+
+
+def test_console_folds_long_report_content_instead_of_ellipsis() -> None:
+    """窄终端应折行保留完整报告文字，而不是以省略号隐藏结论尾部。"""
+    output_buffer = StringIO()
+    console = Console(file=output_buffer, width=80, force_terminal=False)
+    incident = IncidentRequest(query="Python 判题无结果", target_environment="aoi-local")
+    report = InvestigationReport(
+        incident_id=incident.incident_id,
+        status="inconclusive",
+        observations=[],
+        hypotheses=[],
+        conclusion="这是很长的结论文本，用于验证终端表格会自动折行且保留完整文本末尾标记。",
+    )
+    run = InvestigationRun(
+        incident=incident,
+        observations=[],
+        completed_calls=[],
+        investigation_rounds=0,
+        stop_reason="证据不足",
+        report=report,
+    )
+
+    InvestigationConsole(console).render_report(run_file=_default_run_file(), run=run)
+
+    output = output_buffer.getvalue()
+    assert "完整文本末尾标记" in output
+    assert "…" not in output

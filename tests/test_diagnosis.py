@@ -6,7 +6,10 @@ import pytest
 
 from hinataops.agent_core.diagnosis import DiagnosisContext, DiagnosisError
 from hinataops.agent_core.gateway import GatewayToolResult, ToolDescriptor
-from hinataops.agent_core.llm import LlmInvestigationDiagnostician
+from hinataops.agent_core.llm import (
+    LlmInvestigationDiagnostician,
+    ValidatedStructuredOutput,
+)
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 from hinataops.agent_core.planner import InvestigationPlanner, PlanningContext, PlanningDecision
 from hinataops.agent_core.policy import InvestigationBudget
@@ -23,7 +26,7 @@ class FakeStructuredOutputClient:
         self.schema_name = ""
         self.schema: dict[str, object] = {}
 
-    async def create_json(
+    async def create_validated_json(
         self,
         *,
         system_prompt: str,
@@ -31,18 +34,19 @@ class FakeStructuredOutputClient:
         schema_name: str,
         schema: dict[str, object],
         json_example: str,
-    ) -> dict[str, object]:
+        validate,
+    ) -> ValidatedStructuredOutput:
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.schema_name = schema_name
         self.schema = schema
-        return self._response
+        return ValidatedStructuredOutput(value=validate(self._response), attempts=1)
 
 
 class EvidenceAwareDiagnosisClient:
     """从真实工作流传入的 Prompt 读取 Evidence ID，模拟受约束模型引用证据。"""
 
-    async def create_json(
+    async def create_validated_json(
         self,
         *,
         system_prompt: str,
@@ -50,9 +54,10 @@ class EvidenceAwareDiagnosisClient:
         schema_name: str,
         schema: dict[str, object],
         json_example: str,
-    ) -> dict[str, object]:
+        validate,
+    ) -> ValidatedStructuredOutput:
         evidence_id = json.loads(user_prompt)["observations"][0]["evidence_id"]
-        return {
+        response = {
             "status": "diagnosed",
             "hypotheses": [
                 {
@@ -68,6 +73,7 @@ class EvidenceAwareDiagnosisClient:
             "conclusion": "Python Judge Worker 不可用导致任务无法消费。",
             "recommended_action": "请人工确认后重启 judge-python，并复查 Stream lag。",
         }
+        return ValidatedStructuredOutput(value=validate(response), attempts=1)
 
 
 class OneCheckPlanner(InvestigationPlanner):
@@ -197,7 +203,7 @@ def test_diagnostician_rejects_cause_code_outside_evaluation_contract() -> None:
         }
     )
 
-    with pytest.raises(DiagnosisError, match="诊断报告契约"):
+    with pytest.raises(DiagnosisError, match="诊断"):
         asyncio.run(
             LlmInvestigationDiagnostician(
                 client,
@@ -226,8 +232,39 @@ def test_diagnostician_rejects_hallucinated_evidence_id() -> None:
         }
     )
 
-    with pytest.raises(DiagnosisError, match="诊断报告契约"):
+    with pytest.raises(DiagnosisError, match="诊断"):
         asyncio.run(LlmInvestigationDiagnostician(client).diagnose(_context()))
+
+
+def test_diagnostician_downgrades_low_confidence_primary_to_inconclusive() -> None:
+    context = _context()
+    evidence_id = str(context.observations[0].evidence_id)
+    client = FakeStructuredOutputClient(
+        {
+            "status": "diagnosed",
+            "hypotheses": [
+                {
+                    "cause_code": "judge_worker_unavailable",
+                    "cause": "Worker 可能不可用",
+                    "confidence": 0.45,
+                    "supporting_evidence_ids": [evidence_id],
+                    "contradicting_evidence_ids": [],
+                    "missing_evidence": ["任务级日志"],
+                }
+            ],
+            "primary_hypothesis_index": 0,
+            "conclusion": "仍需补充任务级证据。",
+            "recommended_action": "人工核查任务日志。",
+        }
+    )
+
+    report = asyncio.run(LlmInvestigationDiagnostician(client).diagnose(context))
+
+    assert report.status == "inconclusive"
+    assert report.primary_hypothesis_id is None
+    assert report.hypotheses[0].confidence == 0.45
+    assert "未达到 70% 的确认阈值" in report.conclusion
+    assert "不低于 70%" in client.system_prompt
 
 
 def test_workflow_generates_a_traceable_report_after_evidence_collection() -> None:

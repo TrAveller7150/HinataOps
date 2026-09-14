@@ -40,6 +40,7 @@ class _WorkflowState(TypedDict):
     retry_attempts: list[RetryAttempt]
     planned_calls: list[ToolCall]
     planning_traces: list[PlanningTrace]
+    diagnosis_error: str | None
     investigation_rounds: int
     stop_reason: str | None
     report: InvestigationReport | None
@@ -59,12 +60,14 @@ class InvestigationRun:
         report: InvestigationReport,
         retry_attempts: list[RetryAttempt] | None = None,
         planning_traces: list[PlanningTrace] | None = None,
+        diagnosis_error: str | None = None,
     ) -> None:
         self.incident = incident
         self.observations = observations
         self.completed_calls = completed_calls
         self.retry_attempts = retry_attempts or []
         self.planning_traces = planning_traces or []
+        self.diagnosis_error = diagnosis_error
         self.investigation_rounds = investigation_rounds
         self.stop_reason = stop_reason
         self.report = report
@@ -100,6 +103,7 @@ class InvestigationWorkflow:
                 "retry_attempts": [],
                 "planned_calls": [],
                 "planning_traces": [],
+                "diagnosis_error": None,
                 "investigation_rounds": 0,
                 "stop_reason": None,
                 "report": None,
@@ -111,6 +115,7 @@ class InvestigationWorkflow:
             completed_calls=result["completed_calls"],
             retry_attempts=result["retry_attempts"],
             planning_traces=result["planning_traces"],
+            diagnosis_error=result["diagnosis_error"],
             investigation_rounds=result["investigation_rounds"],
             stop_reason=result["stop_reason"] or "调查图异常结束",
             report=result["report"],
@@ -154,7 +159,7 @@ class InvestigationWorkflow:
         catalog = state["catalog"]
         if catalog is None:
             return {"stop_reason": "MCP Tool Catalog 不可用"}
-        if state["investigation_rounds"] >= self._budget.max_rounds:
+        if state["investigation_rounds"] > self._budget.max_rounds:
             return {"stop_reason": "已达到调查轮次预算"}
         if len(state["completed_calls"]) >= self._budget.max_tool_calls:
             return {"stop_reason": "已达到 Tool 调用次数预算"}
@@ -167,6 +172,14 @@ class InvestigationWorkflow:
                     observations=state["observations"],
                     completed_calls=state["completed_calls"],
                     investigation_round=investigation_round,
+                    remaining_tool_calls=(
+                        self._budget.max_tool_calls - len(state["completed_calls"])
+                        if state["investigation_rounds"] < self._budget.max_rounds
+                        else 0
+                    ),
+                    remaining_evidence_rounds=max(
+                        0, self._budget.max_rounds - state["investigation_rounds"]
+                    ),
                 )
             )
         except PlannerError as error:
@@ -186,17 +199,27 @@ class InvestigationWorkflow:
             summary=decision.decision_summary,
             tool_calls=decision.tool_calls,
             finish_reason=decision.finish_reason,
+            compatibility_note=decision.compatibility_note,
         )
         traces = [*state["planning_traces"], trace]
         if not decision.tool_calls:
-            self._emit(InvestigationEvent(kind="planning_finished", detail=trace.summary))
+            self._emit(InvestigationEvent(kind="planning_finished", detail=self._trace_detail(trace)))
             return {"stop_reason": decision.finish_reason, "planning_traces": traces}
         self._emit(
             InvestigationEvent(
-                kind="tools_planned", calls=tuple(decision.tool_calls), detail=trace.summary
+                kind="tools_planned", calls=tuple(decision.tool_calls), detail=self._trace_detail(trace)
             )
         )
         return {"planned_calls": decision.tool_calls, "planning_traces": traces}
+
+    @staticmethod
+    def _trace_detail(trace: PlanningTrace) -> str:
+        """把结构化兼容记录附在展示摘要中，避免静默吞掉供应商格式漂移。"""
+        return (
+            trace.summary
+            if trace.compatibility_note is None
+            else f"{trace.summary}（格式兼容：{trace.compatibility_note}）"
+        )
 
     def _authorize(self, state: _WorkflowState) -> dict[str, object]:
         """逐项校验 Catalog、只读白名单、重复调用和预算，失败时不触碰 Gateway。"""
@@ -322,8 +345,10 @@ class InvestigationWorkflow:
         self._emit(InvestigationEvent(kind="diagnosis_started"))
         try:
             report = await self._diagnostician.diagnose(context)
-        except DiagnosisError:
+        except DiagnosisError as error:
+            self._emit(InvestigationEvent(kind="diagnosis_failed", detail=str(error)))
             report = await InconclusiveDiagnostician().diagnose(context)
+            return {"report": report, "diagnosis_error": str(error)}
         self._emit(InvestigationEvent(kind="diagnosis_completed"))
         return {"report": report}
 

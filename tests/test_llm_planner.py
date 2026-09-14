@@ -5,7 +5,11 @@ from datetime import UTC, datetime
 import pytest
 
 from hinataops.agent_core.gateway import GatewayToolResult, ToolCatalog, ToolDescriptor
-from hinataops.agent_core.llm import LlmInvestigationPlanner, ModelPlanningDecision
+from hinataops.agent_core.llm import (
+    LlmInvestigationPlanner,
+    ModelPlanningDecision,
+    ValidatedStructuredOutput,
+)
 from hinataops.agent_core.models import IncidentRequest, Observation, ToolCall
 from hinataops.agent_core.planner import PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget
@@ -21,7 +25,7 @@ class FakeStructuredOutputClient:
         self.user_prompt = ""
         self.schema: dict[str, object] = {}
 
-    async def create_json(
+    async def create_validated_json(
         self,
         *,
         system_prompt: str,
@@ -29,11 +33,16 @@ class FakeStructuredOutputClient:
         schema_name: str,
         schema: dict[str, object],
         json_example: str,
-    ) -> dict[str, object]:
+        validate,
+    ) -> ValidatedStructuredOutput:
         self.system_prompt = system_prompt
         self.user_prompt = user_prompt
         self.schema = schema
-        return self._decision
+        try:
+            value = validate(self._decision)
+        except (TypeError, ValueError) as error:
+            raise PlannerError("LLM 结构化输出不符合调查决策契约") from error
+        return ValidatedStructuredOutput(value=value, attempts=1)
 
 
 class CatalogOnlyGateway:
@@ -96,6 +105,7 @@ def _context() -> PlanningContext:
             )
         ],
         investigation_round=2,
+        remaining_tool_calls=5,
     )
 
 
@@ -147,6 +157,41 @@ def test_llm_planner_rejects_invalid_structured_decision() -> None:
         asyncio.run(planner.decide(_context()))
 
 
+def test_llm_planner_compatibly_accepts_known_decision_summary_note() -> None:
+    client = FakeStructuredOutputClient(
+        {
+            "tool_calls": [],
+            "finish_reason_code": "evidence_sufficient",
+            "decision_summary_note": "已完成必要采证。",
+        }
+    )
+    planner = LlmInvestigationPlanner(
+        client, readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})
+    )
+
+    decision = asyncio.run(planner.decide(_context()))
+
+    assert decision.decision_summary == "已完成必要采证。"
+    assert decision.compatibility_note == "已忽略非执行兼容字段 decision_summary_note。"
+
+
+def test_llm_planner_still_rejects_unknown_extra_fields() -> None:
+    client = FakeStructuredOutputClient(
+        {
+            "tool_calls": [],
+            "finish_reason_code": "evidence_sufficient",
+            "decision_summary": "已完成必要采证。",
+            "unexpected_note": "不能静默兼容。",
+        }
+    )
+    planner = LlmInvestigationPlanner(
+        client, readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"})
+    )
+
+    with pytest.raises(PlannerError, match="调查决策契约"):
+        asyncio.run(planner.decide(_context()))
+
+
 def test_workflow_stops_before_mcp_when_llm_selects_unallowed_tool() -> None:
     client = FakeStructuredOutputClient(
         {
@@ -173,9 +218,9 @@ def test_workflow_stops_before_mcp_when_llm_selects_unallowed_tool() -> None:
 
     assert gateway.calls == []
     assert "Planner 输出不可用" in result.stop_reason
-    assert "未授权 Tool" in result.stop_reason
+    assert "调查决策契约" in result.stop_reason
     assert result.planning_traces[0].status == "failed"
-    assert "未授权 Tool" in result.planning_traces[0].summary
+    assert "调查决策契约" in result.planning_traces[0].summary
 
 
 def test_llm_output_schema_keeps_dynamic_tool_arguments_as_a_json_string() -> None:

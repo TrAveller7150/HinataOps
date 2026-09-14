@@ -5,18 +5,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 from dataclasses import asdict
 from pathlib import Path
 import sys
 from typing import Sequence
-import tomllib
 
 from hinataops.agent_core.evaluation import EvaluationResult, InvestigationEvaluator
 from hinataops.agent_core.events import InvestigationEventListener
 from hinataops.agent_core.llm import OpenAICompatibleStructuredOutputClient
 from hinataops.agent_core.workflow import InvestigationRun
 from hinataops.investigation_service import run_readonly_investigation
+from hinataops.llm_config import LlmConnectionConfig, load_llm_connection
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.evaluation import (
     PYTHON_JUDGE_WORKER_UNAVAILABLE,
 )
@@ -29,38 +28,33 @@ DEFAULT_LLM_CONFIG_PATH = Path("config/environments/llm.local.toml")
 
 
 def _load_api_key_from_file(config_path: Path) -> str:
-    """读取被 Git 忽略的本机 LLM 配置；只接受预期的 DeepSeek 字段。"""
-    try:
-        with config_path.open("rb") as file:
-            data = tomllib.load(file)
-    except FileNotFoundError as error:
-        raise ValueError(f"未找到 LLM 本机配置文件: {config_path}") from error
-    deepseek = data.get("deepseek")
-    if not isinstance(deepseek, dict) or not isinstance(deepseek.get("api_key"), str):
-        raise ValueError(f"{config_path} 缺少 [deepseek].api_key")
-    api_key = deepseek["api_key"].strip()
-    if not api_key:
-        raise ValueError(f"{config_path} 的 [deepseek].api_key 不能为空")
-    return api_key
+    """保留旧测试入口；通用配置解析逻辑已迁至 llm_config。"""
+    return load_llm_connection(config_path).api_key
 
 
 def _require_api_key(config_path: Path) -> str:
-    """环境变量可临时覆盖本机 TOML；两者都不进入报告或命令参数。"""
-    return os.environ.get(DEEPSEEK_API_KEY_ENV) or _load_api_key_from_file(config_path)
+    """保留旧调用方入口；新代码应使用完整连接配置。"""
+    return _require_llm_connection(config_path).api_key
+
+
+def _require_llm_connection(config_path: Path) -> LlmConnectionConfig:
+    """读取模型、地址、能力模式与密钥；密钥不会写入归档。"""
+    return load_llm_connection(config_path)
 
 
 async def run_python_judge_worker_baseline(
     *, mcp_url: str,
-    api_key: str,
+    connection: LlmConnectionConfig,
     event_listener: InvestigationEventListener | None = None,
 ) -> tuple[InvestigationRun, EvaluationResult]:
     """以真实 MCP 证据运行 Python 判题 Worker 不可用场景，不触发任何写操作。"""
     scenario = PYTHON_JUDGE_WORKER_UNAVAILABLE
     client = OpenAICompatibleStructuredOutputClient(
-        model=DEEPSEEK_MODEL,
-        api_key=api_key,
-        base_url=DEEPSEEK_BASE_URL,
-        response_format_mode="json_object",
+        model=connection.model,
+        api_key=connection.api_key,
+        base_url=connection.base_url,
+        response_format_mode=connection.response_format_mode,
+        max_tokens=connection.max_tokens,
     )
     run = await run_readonly_investigation(
         mcp_url=mcp_url,
@@ -74,10 +68,10 @@ async def run_python_judge_worker_baseline(
     return run, InvestigationEvaluator().evaluate(scenario, run)
 
 
-def _render_result(run: InvestigationRun, result: EvaluationResult) -> str:
+def _render_result(run: InvestigationRun, result: EvaluationResult, *, model: str) -> str:
     """输出可归档 JSON；不输出 API Key、MCP 配置或模型请求头。"""
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": model,
         "scenario_id": result.scenario_id,
         "stop_reason": run.stop_reason,
         "completed_tool_calls": [call.model_dump(mode="json") for call in run.completed_calls],
@@ -127,15 +121,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     _configure_utf8_output()
     args = _parse_args(argv)
     try:
+        connection = _require_llm_connection(args.llm_config)
         run, result = asyncio.run(
             run_python_judge_worker_baseline(
                 mcp_url=args.mcp_url,
-                api_key=_require_api_key(args.llm_config),
+                connection=connection,
             )
         )
     except ValueError as error:
         raise SystemExit(f"无法启动真实 LLM 评测: {error}") from error
-    _write_result(_render_result(run, result), args.output_file)
+    _write_result(_render_result(run, result, model=connection.model), args.output_file)
 
 
 if __name__ == "__main__":

@@ -94,7 +94,8 @@ def test_workflow_collects_planned_readonly_evidence_then_finishes() -> None:
                         arguments={"language": "python"},
                     ),
                     ToolCall(name="aoi_judge_get_runtime"),
-                ]
+                ],
+                compatibility_note="已忽略非执行兼容字段 decision_summary_note。",
             ),
             PlanningDecision(finish_reason="关键证据已经齐全"),
         ]
@@ -124,6 +125,9 @@ def test_workflow_collects_planned_readonly_evidence_then_finishes() -> None:
         ToolCall(name="aoi_judge_get_stream_summary", arguments={"language": "python"}),
         ToolCall(name="aoi_judge_get_runtime"),
     ]
+    assert result.planning_traces[0].compatibility_note == (
+        "已忽略非执行兼容字段 decision_summary_note。"
+    )
 
 
 def test_workflow_emits_display_events_without_changing_evidence_collection() -> None:
@@ -215,6 +219,44 @@ def test_workflow_stops_deterministically_when_total_tool_budget_is_exhausted() 
     assert [call.name for call in gateway.calls] == ["aoi_judge_get_stream_summary"]
     assert result.stop_reason == "已达到 Tool 调用次数预算"
     assert len(planner.contexts) == 1
+
+
+def test_workflow_allows_one_closing_decision_after_evidence_round_limit() -> None:
+    """四批采证后仍应允许 Planner 解释性结束，而不是直接标记轮次预算耗尽。"""
+    stream = "aoi_judge_get_stream_summary"
+    runtime = "aoi_judge_get_runtime"
+    planner = ScriptedPlanner(
+        [
+            PlanningDecision(tool_calls=[ToolCall(name=stream, arguments={"language": "python"})]),
+            PlanningDecision(tool_calls=[ToolCall(name=runtime)]),
+            PlanningDecision(tool_calls=[ToolCall(name=stream, arguments={"language": "sql"})]),
+            PlanningDecision(tool_calls=[ToolCall(name=runtime, arguments={"scope": "all"})]),
+            PlanningDecision(finish_reason="已完成四批采证，结束调查。"),
+        ]
+    )
+    workflow = InvestigationWorkflow(
+        FakeToolGateway([stream, runtime]),
+        planner,
+        InvestigationBudget(
+            readonly_tool_names=frozenset({stream, runtime}),
+            max_rounds=4,
+            max_tool_calls=7,
+        ),
+    )
+
+    result = asyncio.run(workflow.run(_incident()))
+
+    assert result.investigation_rounds == 4
+    assert result.stop_reason == "已完成四批采证，结束调查。"
+    assert [trace.status for trace in result.planning_traces] == [
+        "planned",
+        "planned",
+        "planned",
+        "planned",
+        "finished",
+    ]
+    assert planner.contexts[-1].remaining_tool_calls == 0
+    assert planner.contexts[-1].remaining_evidence_rounds == 0
 
 
 def test_workflow_retries_one_explicitly_retryable_partial_observation() -> None:
