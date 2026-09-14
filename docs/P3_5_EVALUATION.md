@@ -35,6 +35,9 @@ Ground Truth：
 
 评测器不使用 LLM-as-a-Judge；报告自身的置信度也不计入得分。
 
+对 MCP 明确标记 `retryable=true` 的部分/失败证据，调查图只允许相同 Tool 与参数重试一次；重试计入总
+Tool 预算，并在结果的 `retry_attempts` 中记录错误类别、第二次尝试和一秒退避。普通重复调用仍会被拒绝。
+
 ## 2026-09-10 现场运行记录
 
 已在 `aoi-local` 完成一次受控运行：停止并恢复 `aoi-learn-judge-python-1`，通过真实 MCP

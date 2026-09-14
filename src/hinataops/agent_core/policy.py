@@ -25,13 +25,18 @@ class InvestigationBudget:
         *,
         completed_calls: list[ToolCall],
         investigation_round: int,
+        retryable_fingerprints: frozenset[str] = frozenset(),
     ) -> None:
         """验证调用，不执行 Tool；调用方仅在成功后才能进入 MCP Gateway。"""
         if investigation_round > self.max_rounds:
             raise InvestigationPolicyError("已达到调查轮次预算")
         if call.name not in self.readonly_tool_names:
             raise InvestigationPolicyError("Tool 不在只读 Tool 白名单中")
-        if call.fingerprint in {item.fingerprint for item in completed_calls}:
-            raise InvestigationPolicyError("不允许重复执行相同 Tool 和参数")
+        duplicate_count = sum(item.fingerprint == call.fingerprint for item in completed_calls)
+        if duplicate_count:
+            if call.fingerprint not in retryable_fingerprints:
+                raise InvestigationPolicyError("不允许重复执行相同 Tool 和参数")
+            if duplicate_count >= 2:
+                raise InvestigationPolicyError("同一可重试 Tool 最多执行两次")
         if len(completed_calls) >= self.max_tool_calls:
             raise InvestigationPolicyError("已达到 Tool 调用次数预算")

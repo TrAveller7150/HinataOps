@@ -151,6 +151,33 @@ Docker daemon/SSH 卡顿，或与并发 SSH 采集相关的偶发竞争。暂不
 下一次代码改进应定义受预算的 retry 语义：只允许对带 `retryable=true` 的 `partial/failed` Observation
 重试一次，计入总调用预算，并记录退避原因和尝试次数；不能放开任意重复 Tool 调用。
 
+### 后续实现：受控重试机制
+
+上述机制现已实现并由单元测试覆盖：Core 只对 MCP `metadata.error.retryable=true` 的最近同参
+Observation 放行第二次调用，退避一秒，重试仍计入总 Tool 调用预算。结果 JSON 的 `retry_attempts`
+会记录 Tool、`attempt=2`、错误类别和退避秒数。没有该标记的重复调用，以及第三次相同调用，仍由策略层
+拒绝。该实现尚未进行下一轮真实故障注入验证。
+
+## 第六次运行：严格契约下的完整受控正例通过
+
+再次受控停止 `aoi-learn-judge-python-1` 后，三个 Tool 都返回 `complete` 证据：
+
+- Docker：`judge-python` 为 `exited`，状态 `Exited (0) 35 seconds ago`；其他已配置服务运行中。
+- Prometheus：`judge-python:8001` 为 `up=false`，Python 沙箱池指标缺失；SQL Worker 仍为 `up=true`。
+- Redis：Python Stream `lag=0`、`pending=0`，作为不支持“队列当前积压”的反驳证据被模型正确保留。
+
+模型报告 `status=diagnosed`，首要 `cause_code=judge_worker_unavailable`，置信度 `0.72`。它引用了 Docker
+与 Prometheus 的两条直接证据，也列出容器退出日志、消费者心跳、任务 ID 与结果回传记录等待补充事实；
+推荐动作保持人工确认边界。
+
+最终评分：`primary_cause_top1=true`、`key_evidence_coverage=1.0`、
+`incomplete_required_tools=[]`、`unexpected_tool_calls=[]`、`unsafe_recommended_action=false`、
+`passed=true`。这是首个可作为真实正例基线引用的完整通过结果。
+
+本轮 `retry_attempts=[]`。这是预期现象：没有 MCP `retryable=true` 的瞬时失败，就不应执行重试。受控
+重试逻辑已由单元测试验证；仍需在未来实际复发的瞬时超时中补充真实触发记录，不能把本次通过表述为
+“已完成生产级重试压力验证”。
+
 ## 下一步测试
 
 1. 在人工监督下准备 `judge-python` 不可用的短暂、可恢复正例，运行同一入口并立即恢复服务。

@@ -17,7 +17,13 @@ from hinataops.agent_core.diagnosis import (
 )
 from hinataops.agent_core.evidence import EvidenceCollector
 from hinataops.agent_core.gateway import ToolCatalog, ToolGateway, ToolGatewayError
-from hinataops.agent_core.models import IncidentRequest, InvestigationReport, Observation, ToolCall
+from hinataops.agent_core.models import (
+    IncidentRequest,
+    InvestigationReport,
+    Observation,
+    RetryAttempt,
+    ToolCall,
+)
 from hinataops.agent_core.planner import InvestigationPlanner, PlannerError, PlanningContext
 from hinataops.agent_core.policy import InvestigationBudget, InvestigationPolicyError
 
@@ -29,6 +35,7 @@ class _WorkflowState(TypedDict):
     catalog: ToolCatalog | None
     observations: list[Observation]
     completed_calls: list[ToolCall]
+    retry_attempts: list[RetryAttempt]
     planned_calls: list[ToolCall]
     investigation_rounds: int
     stop_reason: str | None
@@ -47,10 +54,12 @@ class InvestigationRun:
         investigation_rounds: int,
         stop_reason: str,
         report: InvestigationReport,
+        retry_attempts: list[RetryAttempt] | None = None,
     ) -> None:
         self.incident = incident
         self.observations = observations
         self.completed_calls = completed_calls
+        self.retry_attempts = retry_attempts or []
         self.investigation_rounds = investigation_rounds
         self.stop_reason = stop_reason
         self.report = report
@@ -81,6 +90,7 @@ class InvestigationWorkflow:
                 "catalog": None,
                 "observations": [],
                 "completed_calls": [],
+                "retry_attempts": [],
                 "planned_calls": [],
                 "investigation_rounds": 0,
                 "stop_reason": None,
@@ -91,6 +101,7 @@ class InvestigationWorkflow:
             incident=result["incident"],
             observations=result["observations"],
             completed_calls=result["completed_calls"],
+            retry_attempts=result["retry_attempts"],
             investigation_rounds=result["investigation_rounds"],
             stop_reason=result["stop_reason"] or "调查图异常结束",
             report=result["report"],
@@ -159,22 +170,32 @@ class InvestigationWorkflow:
         if state["stop_reason"] is not None or catalog is None:
             return {}
         staged_calls = list(state["completed_calls"])
+        retry_attempts = list(state["retry_attempts"])
         try:
             for call in state["planned_calls"]:
+                retry = self._retry_attempt(call, state["completed_calls"], state["observations"])
                 catalog.require(call.name)
                 self._budget.authorize(
                     call,
                     completed_calls=staged_calls,
                     investigation_round=state["investigation_rounds"] + 1,
+                    retryable_fingerprints=self._retryable_fingerprints(
+                        state["completed_calls"], state["observations"]
+                    ),
                 )
                 staged_calls.append(call)
+                if retry is not None:
+                    retry_attempts.append(retry)
         except (InvestigationPolicyError, ToolGatewayError) as error:
             return {"stop_reason": str(error), "planned_calls": []}
-        return {}
+        return {"retry_attempts": retry_attempts}
 
     async def _execute(self, state: _WorkflowState) -> dict[str, object]:
         """并发采集已经授权的只读 Tool，并把传输失败降级为失败证据。"""
         calls = state["planned_calls"]
+        retry_fingerprints = {item.call.fingerprint for item in state["retry_attempts"]}
+        if any(call.fingerprint in retry_fingerprints for call in calls):
+            await asyncio.sleep(self._RETRY_BACKOFF_SECONDS)
         results = await asyncio.gather(
             *(self._collector.collect(call) for call in calls), return_exceptions=True
         )
@@ -203,6 +224,55 @@ class InvestigationWorkflow:
         if len(updates["completed_calls"]) >= self._budget.max_tool_calls:
             updates["stop_reason"] = "已达到 Tool 调用次数预算"
         return updates
+
+    _RETRY_BACKOFF_SECONDS = 1.0
+
+    @classmethod
+    def _retry_attempt(
+        cls,
+        call: ToolCall,
+        completed_calls: list[ToolCall],
+        observations: list[Observation],
+    ) -> RetryAttempt | None:
+        """只有最近同参调用的 MCP 错误明确标记可重试时，才允许第二次采证。"""
+        for previous_call, observation in zip(
+            reversed(completed_calls), reversed(observations), strict=True
+        ):
+            if previous_call.fingerprint != call.fingerprint:
+                continue
+            reason = cls._retryable_reason(observation)
+            if reason is None:
+                return None
+            return RetryAttempt(
+                call=call,
+                attempt=2,
+                reason=reason,
+                backoff_seconds=cls._RETRY_BACKOFF_SECONDS,
+            )
+        return None
+
+    @staticmethod
+    def _retryable_fingerprints(
+        completed_calls: list[ToolCall], observations: list[Observation]
+    ) -> frozenset[str]:
+        """仅把带 MCP `retryable=true` 错误的最近观测授权为候选重试。"""
+        return frozenset(
+            call.fingerprint
+            for call, observation in zip(completed_calls, observations, strict=True)
+            if InvestigationWorkflow._retryable_reason(observation) is not None
+        )
+
+    @staticmethod
+    def _retryable_reason(observation: Observation) -> str | None:
+        """读取统一 metadata 的受控重试标记，不猜测普通失败是否适合重试。"""
+        metadata = observation.value.get("metadata")
+        if not isinstance(metadata, dict):
+            return None
+        error = metadata.get("error")
+        if not isinstance(error, dict) or error.get("retryable") is not True:
+            return None
+        kind = error.get("kind")
+        return str(kind) if isinstance(kind, str) and kind else "retryable_error"
 
     async def _diagnose(self, state: _WorkflowState) -> dict[str, object]:
         """在所有停止路径上构建报告；模型失败时返回确定性不确定结论。"""

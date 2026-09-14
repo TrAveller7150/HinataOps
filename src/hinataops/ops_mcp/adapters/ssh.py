@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 from hinataops.ops_mcp.config import EnvironmentDetails
 
 
 class SshCommandError(RuntimeError):
     """有界 SSH 观测命令无法完成时抛出的异常。"""
+
+    def __init__(
+        self,
+        kind: Literal["ssh_command_timeout", "remote_command_failed", "output_budget_exceeded"],
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class SshRunner:
@@ -53,11 +62,13 @@ class SshRunner:
             # 超时的观测不能遗留仍占用目标环境连接的 SSH 子进程。
             process.kill()
             await process.wait()
-            raise SshCommandError("SSH command timed out") from None
+            raise SshCommandError("ssh_command_timeout", "SSH command timed out") from None
 
         if process.returncode != 0:
             message = stderr.decode().strip() or "SSH command failed"
-            raise SshCommandError(message)
+            raise SshCommandError("remote_command_failed", message)
         if len(stdout) > max_output_bytes:
-            raise SshCommandError("SSH command exceeded configured output budget")
+            raise SshCommandError(
+                "output_budget_exceeded", "SSH command exceeded configured output budget"
+            )
         return stdout.decode()

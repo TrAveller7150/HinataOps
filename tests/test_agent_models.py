@@ -99,6 +99,27 @@ def test_budget_rejects_write_tools_duplicate_calls_and_exhausted_budget() -> No
 
     budget.authorize(call, completed_calls=[], investigation_round=1)
 
+    budget = InvestigationBudget(
+        readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"}),
+        max_rounds=3,
+        max_tool_calls=2,
+    )
+    budget.authorize(call, completed_calls=[], investigation_round=1)
+    budget.authorize(
+        call,
+        completed_calls=[call],
+        investigation_round=2,
+        retryable_fingerprints=frozenset({call.fingerprint}),
+    )
+
+    with pytest.raises(InvestigationPolicyError, match="最多执行两次"):
+        budget.authorize(
+            call,
+            completed_calls=[call, call],
+            investigation_round=3,
+            retryable_fingerprints=frozenset({call.fingerprint}),
+        )
+
     with pytest.raises(InvestigationPolicyError, match="只读 Tool 白名单"):
         budget.authorize(
             ToolCall(name="docker_restart_service", arguments={"action_id": "example"}),
@@ -109,6 +130,11 @@ def test_budget_rejects_write_tools_duplicate_calls_and_exhausted_budget() -> No
     with pytest.raises(InvestigationPolicyError, match="重复"):
         budget.authorize(call, completed_calls=[call], investigation_round=1)
 
+    budget = InvestigationBudget(
+        readonly_tool_names=frozenset({"aoi_judge_get_stream_summary"}),
+        max_rounds=3,
+        max_tool_calls=1,
+    )
     with pytest.raises(InvestigationPolicyError, match="调用次数预算"):
         budget.authorize(
             ToolCall(name="aoi_judge_get_stream_summary", arguments={"language": "sql"}),

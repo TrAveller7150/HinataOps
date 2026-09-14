@@ -88,6 +88,7 @@ def _render_result(run: InvestigationRun, result: EvaluationResult) -> str:
         "scenario_id": result.scenario_id,
         "stop_reason": run.stop_reason,
         "completed_tool_calls": [call.model_dump(mode="json") for call in run.completed_calls],
+        "retry_attempts": [item.model_dump(mode="json") for item in run.retry_attempts],
         "report": run.report.model_dump(mode="json"),
         "evaluation": asdict(result),
     }

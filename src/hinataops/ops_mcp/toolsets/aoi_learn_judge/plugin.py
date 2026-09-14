@@ -49,10 +49,22 @@ class AoiLearnJudgePlugin:
         """将基础设施异常转换为领域 Tool 的脱敏错误契约。"""
         logger.warning("%s 观测失败: %s", source, error)
         if isinstance(error, SshCommandError):
+            if error.kind == "ssh_command_timeout":
+                return ObservationError(
+                    kind="ssh_command_timeout",
+                    message=f"{source} 命令在受限时间内未完成",
+                    retryable=True,
+                )
+            if error.kind == "output_budget_exceeded":
+                return ObservationError(
+                    kind="output_budget_exceeded",
+                    message=f"{source} 返回数据超过受审核输出上限",
+                    retryable=False,
+                )
             return ObservationError(
-                kind="target_unavailable",
-                message=f"无法完成 {source} 观测；请检查目标服务和 SSH 连通性",
-                retryable=True,
+                kind="remote_command_failed",
+                message=f"{source} 的远端只读命令执行失败",
+                retryable=False,
             )
         return ObservationError(
             kind="parse_error",

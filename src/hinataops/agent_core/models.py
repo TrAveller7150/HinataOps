@@ -47,6 +47,15 @@ class Observation(BaseModel):
     reliability: Reliability
 
 
+class RetryAttempt(BaseModel):
+    """一次受预算的瞬时采证重试，保留原因、次数与退避时间供事后审查。"""
+
+    call: ToolCall
+    attempt: int = Field(ge=2, le=2)
+    reason: str = Field(min_length=1, max_length=128)
+    backoff_seconds: float = Field(gt=0, le=10)
+
+
 class Hypothesis(BaseModel):
     """一个候选根因及其支持、反驳和待补充证据，置信度不是统计概率。"""
 

@@ -12,6 +12,9 @@ ObservationErrorKind = Literal[
     "target_unavailable",
     "transport_error",
     "parse_error",
+    "ssh_command_timeout",
+    "remote_command_failed",
+    "output_budget_exceeded",
 ]
 
 

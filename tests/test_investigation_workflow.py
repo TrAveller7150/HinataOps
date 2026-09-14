@@ -51,6 +51,28 @@ class ScriptedPlanner(InvestigationPlanner):
         return self._decisions.pop(0)
 
 
+class RetryableGateway(FakeToolGateway):
+    """第一次返回 MCP 明确可重试的部分证据，第二次返回完整证据。"""
+
+    async def call_tool(self, call: ToolCall) -> GatewayToolResult:
+        self.calls.append(call)
+        complete = len(self.calls) == 2
+        return GatewayToolResult(
+            value={
+                "metadata": {
+                    "source": "prometheus",
+                    "observed_at": "2026-09-09T00:00:00+00:00",
+                    "complete": complete,
+                    "warnings": [],
+                    "error": None
+                    if complete
+                    else {"kind": "timeout", "message": "超时", "retryable": True},
+                },
+                "tool": call.name,
+            }
+        )
+
+
 def _incident() -> IncidentRequest:
     return IncidentRequest(
         incident_id=uuid4(),
@@ -158,3 +180,28 @@ def test_workflow_stops_deterministically_when_total_tool_budget_is_exhausted() 
     assert [call.name for call in gateway.calls] == ["aoi_judge_get_stream_summary"]
     assert result.stop_reason == "已达到 Tool 调用次数预算"
     assert len(planner.contexts) == 1
+
+
+def test_workflow_retries_one_explicitly_retryable_partial_observation() -> None:
+    call = ToolCall(name="aoi_judge_get_runtime")
+    gateway = RetryableGateway([call.name])
+    workflow = InvestigationWorkflow(
+        gateway,
+        ScriptedPlanner(
+            [
+                PlanningDecision(tool_calls=[call]),
+                PlanningDecision(tool_calls=[call]),
+                PlanningDecision(finish_reason="关键证据已经齐全"),
+            ]
+        ),
+        InvestigationBudget(readonly_tool_names=frozenset({call.name}), max_tool_calls=3),
+    )
+
+    result = asyncio.run(workflow.run(_incident()))
+
+    assert gateway.calls == [call, call]
+    assert [item.reliability for item in result.observations] == ["partial", "complete"]
+    assert result.retry_attempts[0].attempt == 2
+    assert result.retry_attempts[0].reason == "timeout"
+    assert result.retry_attempts[0].backoff_seconds == 1.0
+    assert result.stop_reason == "关键证据已经齐全"

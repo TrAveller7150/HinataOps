@@ -17,12 +17,22 @@ class PrometheusReadonlyAdapter:
         self._runner = runner
         self._instance = instance
 
+    # 七条固定查询在同一 SSH 预算内串行执行。单条请求必须有更小的硬上限，
+    # 避免某次内部 HTTP 卡顿独占整个 Tool 的 15 秒预算。
+    _CURL_CONNECT_TIMEOUT_SECONDS = 1
+    _CURL_MAX_TIME_SECONDS = 1.5
+
     async def query_many_fixed(self, queries: tuple[str, ...]) -> str:
         """用单条 SSH 会话批量查询固定 PromQL，避免并发连接耗尽预算。"""
         commands = []
         for query in queries:
             url = f"http://prometheus:9090/api/v1/query?query={quote(query, safe='')}"
-            commands.append(f'curl -fsS "{url}"; printf "\\n"')
+            commands.append(
+                "curl -fsS "
+                f"--connect-timeout {self._CURL_CONNECT_TIMEOUT_SECONDS} "
+                f"--max-time {self._CURL_MAX_TIME_SECONDS} "
+                f'"{url}"; printf "\\n"'
+            )
         command = f"docker exec {self._instance.access_container} sh -lc '{'; '.join(commands)}'"
         return await self._runner.run(
             command,
