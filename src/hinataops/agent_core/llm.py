@@ -51,8 +51,8 @@ class ModelPlanningDecision(BaseModel):
 
     tool_calls: list[ModelToolCall] = Field(
         ...,
-        max_length=4,
-        description="本轮需要执行的零到四个只读检查",
+        max_length=2,
+        description="本轮需要执行的零到两个只读检查",
     )
     finish_reason_code: Literal["evidence_sufficient", "no_further_readonly_check"] | None = Field(
         ...,
@@ -60,6 +60,11 @@ class ModelPlanningDecision(BaseModel):
             "调查结束码（`finish_reason_code`）；仅可为 evidence_sufficient 或 "
             "no_further_readonly_check，选择工具时必须为 null"
         ),
+    )
+    decision_summary: str = Field(
+        min_length=1,
+        max_length=1_000,
+        description="面向人工审计的简短决策摘要；说明已知事实、剩余不确定性及本轮选择，不输出内部思维链",
     )
 
     @model_validator(mode="after")
@@ -83,6 +88,7 @@ class ModelPlanningDecision(BaseModel):
                 if self.finish_reason_code is not None
                 else None
             ),
+            decision_summary=self.decision_summary,
         )
 
 
@@ -177,12 +183,21 @@ class OpenAICompatibleStructuredOutputClient:
         if message.content is None:
             raise PlannerError("LLM 未返回结构化内容")
         try:
-            value = json.loads(message.content)
+            value = self._parse_json_object(message.content)
         except json.JSONDecodeError as error:
             raise PlannerError("LLM 返回内容不是 JSON") from error
         if not isinstance(value, dict):
             raise PlannerError("LLM 返回内容必须是 JSON 对象")
         return value
+
+    @staticmethod
+    def _parse_json_object(content: str) -> object:
+        """兼容供应商偶发包裹的单层 Markdown 代码围栏，随后仍执行严格 JSON 校验。"""
+        stripped = content.strip()
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[0].startswith("```") and lines[-1] == "```":
+            stripped = "\n".join(lines[1:-1]).strip()
+        return json.loads(stripped)
 
 
 class LlmInvestigationPlanner(InvestigationPlanner):
@@ -190,7 +205,9 @@ class LlmInvestigationPlanner(InvestigationPlanner):
 
     _system_prompt = """你是只读运维调查规划器。只依据已提供的观测证据选择下一步检查；证据充分时结束调查。
 你没有调用工具、重启服务、运行命令或修改系统的权限。只能从本轮提供的允许只读工具清单中选择工具名称。
-结束时仅返回受限的 `finish_reason_code`，不要在规划结果中输出根因判断、推测或人工建议。
+每轮最多选择两个 Tool，以便下一轮能根据新证据调整。必须提供 `decision_summary`：用一到三句中文说明已知事实、
+仍缺少的证据，以及为何选择本轮 Tool 或结束；它是给人工审计的决策摘要，不要输出逐 token 思维链、根因判断或人工建议。
+结束时仅返回受限的 `finish_reason_code`。
 工具参数字段 `arguments_json` 必须是 JSON 对象字符串；无参数时使用 '{}'."""
 
     def __init__(
@@ -219,7 +236,10 @@ class LlmInvestigationPlanner(InvestigationPlanner):
                 user_prompt=self._render_context(context, allowed_tools),
                 schema_name="investigation_decision",
                 schema=ModelPlanningDecision.model_json_schema(),
-                json_example='{"tool_calls":[],"finish_reason_code":"evidence_sufficient"}',
+                json_example=(
+                    '{"tool_calls":[],"finish_reason_code":"evidence_sufficient",'
+                    '"decision_summary":"已完成必要采证，现有证据足以形成报告。"}'
+                ),
             )
             decision = ModelPlanningDecision.model_validate(raw_decision).to_planning_decision()
         except ValidationError as error:

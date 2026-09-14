@@ -9,7 +9,11 @@ dependencies = [
     "mcp>=1.26,<2",
     "openai>=2.0,<3",
     "pydantic>=2.12,<3",
+    "rich>=14,<15",
 ]
+
+[project.scripts]
+hinataops = "hinataops.cli:main"
 
 [project.entry-points."hinataops.toolsets"]
 aoi_learn_judge = "hinataops.ops_mcp.toolsets.aoi_learn_judge.plugin:create_plugin"

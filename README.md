@@ -29,6 +29,19 @@ uv run python -m hinataops.ops_mcp.server
 
 MCP Streamable HTTP 地址为 `http://127.0.0.1:8000/mcp`。
 
+面向人工的单窗口调查会自动启动并在结束后回收本地 MCP Server，完整 JSON 记录默认保存到
+`.hinataops/runs/`，终端展示每轮可审计决策摘要、关键观测、最终报告与模型假设评估：
+
+```powershell
+uv run hinataops investigate python-judge-task-no-result
+```
+
+如需复用已经手动启动的 MCP Server，可显式指定地址；此时 CLI 不管理该 Server 的生命周期：
+
+```powershell
+uv run hinataops investigate python-judge-task-no-result --mcp-url http://127.0.0.1:8000/mcp
+```
+
 ```powershell
 uv run pytest
 ```
@@ -37,7 +50,7 @@ uv run pytest
 
 ## 当前边界
 
-- 当前没有 CLI、FastAPI 或 React 展示层；下一阶段先建立真实 LLM 评测基线。
+- 当前提供面向单个事故画像的人工调查 CLI；它不携带评测预期根因，尚未提供 FastAPI 或 React 展示层。
 - 当前没有 Runbook RAG；仅在评测证明缺少运行知识是主要失败原因时再引入。
 - 通用 Toolset 不接受任意 Shell、SQL、Redis 命令或 PromQL；新业务系统通过新领域 Plugin 接入。
 - AoiLearn 是参考集成，不是 Agent Core 的内置领域。

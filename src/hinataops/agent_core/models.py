@@ -34,6 +34,16 @@ class ToolCall(BaseModel):
         return f"{self.name}:{json.dumps(self.arguments, sort_keys=True, separators=(',', ':'))}"
 
 
+class PlanningTrace(BaseModel):
+    """每轮 Planner 的可审计决策摘要，不保存或要求模型暴露内部思维链。"""
+
+    investigation_round: int = Field(ge=1)
+    status: Literal["planned", "finished", "failed"]
+    summary: str = Field(min_length=1, max_length=1_000)
+    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=2)
+    finish_reason: str | None = Field(default=None, max_length=1_000)
+
+
 class Observation(BaseModel):
     """一次完成的 MCP 调用产生的原始事实与可读摘要；不在此处推断根因。"""
 

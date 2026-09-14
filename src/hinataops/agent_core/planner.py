@@ -18,8 +18,12 @@ class PlannerError(RuntimeError):
 class PlanningDecision(BaseModel):
     """Planner 一轮的受限输出：选择有限 Tool，或明确结束调查。"""
 
-    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=4)
+    # 每轮最多两项采证，才能让后续决策真正利用上一批证据，而不是一次性穷举全部 Tool。
+    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=2)
     finish_reason: str | None = Field(default=None, min_length=1, max_length=1_000)
+    decision_summary: str = Field(
+        default="脚本化 Planner 未提供决策摘要。", min_length=1, max_length=1_000
+    )
 
     @model_validator(mode="after")
     def validate_decision(self) -> "PlanningDecision":

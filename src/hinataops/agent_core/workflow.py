@@ -16,11 +16,13 @@ from hinataops.agent_core.diagnosis import (
     InvestigationDiagnostician,
 )
 from hinataops.agent_core.evidence import EvidenceCollector
+from hinataops.agent_core.events import InvestigationEvent, InvestigationEventListener
 from hinataops.agent_core.gateway import ToolCatalog, ToolGateway, ToolGatewayError
 from hinataops.agent_core.models import (
     IncidentRequest,
     InvestigationReport,
     Observation,
+    PlanningTrace,
     RetryAttempt,
     ToolCall,
 )
@@ -37,6 +39,7 @@ class _WorkflowState(TypedDict):
     completed_calls: list[ToolCall]
     retry_attempts: list[RetryAttempt]
     planned_calls: list[ToolCall]
+    planning_traces: list[PlanningTrace]
     investigation_rounds: int
     stop_reason: str | None
     report: InvestigationReport | None
@@ -55,11 +58,13 @@ class InvestigationRun:
         stop_reason: str,
         report: InvestigationReport,
         retry_attempts: list[RetryAttempt] | None = None,
+        planning_traces: list[PlanningTrace] | None = None,
     ) -> None:
         self.incident = incident
         self.observations = observations
         self.completed_calls = completed_calls
         self.retry_attempts = retry_attempts or []
+        self.planning_traces = planning_traces or []
         self.investigation_rounds = investigation_rounds
         self.stop_reason = stop_reason
         self.report = report
@@ -74,12 +79,14 @@ class InvestigationWorkflow:
         planner: InvestigationPlanner,
         budget: InvestigationBudget,
         diagnostician: InvestigationDiagnostician | None = None,
+        event_listener: InvestigationEventListener | None = None,
     ) -> None:
         self._gateway = gateway
         self._planner = planner
         self._budget = budget
         self._collector = EvidenceCollector(gateway)
         self._diagnostician = diagnostician or InconclusiveDiagnostician()
+        self._event_listener = event_listener
         self._graph = self._build_graph()
 
     async def run(self, incident: IncidentRequest) -> InvestigationRun:
@@ -92,6 +99,7 @@ class InvestigationWorkflow:
                 "completed_calls": [],
                 "retry_attempts": [],
                 "planned_calls": [],
+                "planning_traces": [],
                 "investigation_rounds": 0,
                 "stop_reason": None,
                 "report": None,
@@ -102,6 +110,7 @@ class InvestigationWorkflow:
             observations=result["observations"],
             completed_calls=result["completed_calls"],
             retry_attempts=result["retry_attempts"],
+            planning_traces=result["planning_traces"],
             investigation_rounds=result["investigation_rounds"],
             stop_reason=result["stop_reason"] or "调查图异常结束",
             report=result["report"],
@@ -137,6 +146,7 @@ class InvestigationWorkflow:
             catalog = await ToolCatalog.load(self._gateway)
         except Exception as error:
             return {"stop_reason": f"无法加载 MCP Tool Catalog: {type(error).__name__}"}
+        self._emit(InvestigationEvent(kind="catalog_loaded", detail=f"发现 {len(catalog.tools)} 个 Tool"))
         return {"catalog": catalog}
 
     async def _plan(self, state: _WorkflowState) -> dict[str, object]:
@@ -148,6 +158,7 @@ class InvestigationWorkflow:
             return {"stop_reason": "已达到调查轮次预算"}
         if len(state["completed_calls"]) >= self._budget.max_tool_calls:
             return {"stop_reason": "已达到 Tool 调用次数预算"}
+        investigation_round = state["investigation_rounds"] + 1
         try:
             decision = await self._planner.decide(
                 PlanningContext(
@@ -155,14 +166,37 @@ class InvestigationWorkflow:
                     catalog=catalog,
                     observations=state["observations"],
                     completed_calls=state["completed_calls"],
-                    investigation_round=state["investigation_rounds"] + 1,
+                    investigation_round=investigation_round,
                 )
             )
         except PlannerError as error:
-            return {"stop_reason": f"Planner 输出不可用: {error}"}
+            trace = PlanningTrace(
+                investigation_round=investigation_round,
+                status="failed",
+                summary=f"Planner 输出不可用：{error}",
+            )
+            self._emit(InvestigationEvent(kind="planning_failed", detail=trace.summary))
+            return {
+                "stop_reason": f"Planner 输出不可用: {error}",
+                "planning_traces": [*state["planning_traces"], trace],
+            }
+        trace = PlanningTrace(
+            investigation_round=investigation_round,
+            status="planned" if decision.tool_calls else "finished",
+            summary=decision.decision_summary,
+            tool_calls=decision.tool_calls,
+            finish_reason=decision.finish_reason,
+        )
+        traces = [*state["planning_traces"], trace]
         if not decision.tool_calls:
-            return {"stop_reason": decision.finish_reason}
-        return {"planned_calls": decision.tool_calls}
+            self._emit(InvestigationEvent(kind="planning_finished", detail=trace.summary))
+            return {"stop_reason": decision.finish_reason, "planning_traces": traces}
+        self._emit(
+            InvestigationEvent(
+                kind="tools_planned", calls=tuple(decision.tool_calls), detail=trace.summary
+            )
+        )
+        return {"planned_calls": decision.tool_calls, "planning_traces": traces}
 
     def _authorize(self, state: _WorkflowState) -> dict[str, object]:
         """逐项校验 Catalog、只读白名单、重复调用和预算，失败时不触碰 Gateway。"""
@@ -193,6 +227,7 @@ class InvestigationWorkflow:
     async def _execute(self, state: _WorkflowState) -> dict[str, object]:
         """并发采集已经授权的只读 Tool，并把传输失败降级为失败证据。"""
         calls = state["planned_calls"]
+        self._emit(InvestigationEvent(kind="tools_started", calls=tuple(calls)))
         retry_fingerprints = {item.call.fingerprint for item in state["retry_attempts"]}
         if any(call.fingerprint in retry_fingerprints for call in calls):
             await asyncio.sleep(self._RETRY_BACKOFF_SECONDS)
@@ -202,19 +237,20 @@ class InvestigationWorkflow:
         observations = list(state["observations"])
         for call, result in zip(calls, results, strict=True):
             if isinstance(result, Exception):
-                observations.append(
-                    Observation(
-                        source="mcp",
-                        tool_name=call.name,
-                        arguments=call.arguments,
-                        observed_at=datetime.now(UTC),
-                        value={"error": type(result).__name__},
-                        summary=f"{call.name} 采集失败，未获得可用基础设施证据。",
-                        reliability="failed",
-                    )
+                observation = Observation(
+                    source="mcp",
+                    tool_name=call.name,
+                    arguments=call.arguments,
+                    observed_at=datetime.now(UTC),
+                    value={"error": type(result).__name__},
+                    summary=f"{call.name} 采集失败，未获得可用基础设施证据。",
+                    reliability="failed",
                 )
+                observations.append(observation)
+                self._emit(InvestigationEvent(kind="tool_completed", observation=observation))
             else:
                 observations.append(result)
+                self._emit(InvestigationEvent(kind="tool_completed", observation=result))
         updates: dict[str, object] = {
             "observations": observations,
             "completed_calls": [*state["completed_calls"], *calls],
@@ -283,11 +319,22 @@ class InvestigationWorkflow:
             completed_calls=state["completed_calls"],
             stop_reason=stop_reason,
         )
+        self._emit(InvestigationEvent(kind="diagnosis_started"))
         try:
             report = await self._diagnostician.diagnose(context)
         except DiagnosisError:
             report = await InconclusiveDiagnostician().diagnose(context)
+        self._emit(InvestigationEvent(kind="diagnosis_completed"))
         return {"report": report}
+
+    def _emit(self, event: InvestigationEvent) -> None:
+        """隔离展示层回调异常，确保终端渲染不会影响调查与安全策略。"""
+        if self._event_listener is None:
+            return
+        try:
+            self._event_listener(event)
+        except Exception:
+            return
 
     @staticmethod
     def _after_authorize(state: _WorkflowState) -> Literal["execute", "finish"]:

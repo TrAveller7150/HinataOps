@@ -13,14 +13,10 @@ from typing import Sequence
 import tomllib
 
 from hinataops.agent_core.evaluation import EvaluationResult, InvestigationEvaluator
-from hinataops.agent_core.gateway import StreamableHttpToolGateway
-from hinataops.agent_core.llm import (
-    LlmInvestigationDiagnostician,
-    LlmInvestigationPlanner,
-    OpenAICompatibleStructuredOutputClient,
-)
-from hinataops.agent_core.policy import InvestigationBudget
-from hinataops.agent_core.workflow import InvestigationRun, InvestigationWorkflow
+from hinataops.agent_core.events import InvestigationEventListener
+from hinataops.agent_core.llm import OpenAICompatibleStructuredOutputClient
+from hinataops.agent_core.workflow import InvestigationRun
+from hinataops.investigation_service import run_readonly_investigation
 from hinataops.ops_mcp.toolsets.aoi_learn_judge.evaluation import (
     PYTHON_JUDGE_WORKER_UNAVAILABLE,
 )
@@ -56,6 +52,7 @@ def _require_api_key(config_path: Path) -> str:
 async def run_python_judge_worker_baseline(
     *, mcp_url: str,
     api_key: str,
+    event_listener: InvestigationEventListener | None = None,
 ) -> tuple[InvestigationRun, EvaluationResult]:
     """以真实 MCP 证据运行 Python 判题 Worker 不可用场景，不触发任何写操作。"""
     scenario = PYTHON_JUDGE_WORKER_UNAVAILABLE
@@ -65,19 +62,15 @@ async def run_python_judge_worker_baseline(
         base_url=DEEPSEEK_BASE_URL,
         response_format_mode="json_object",
     )
-    workflow = InvestigationWorkflow(
-        StreamableHttpToolGateway(mcp_url),
-        LlmInvestigationPlanner(client, readonly_tool_names=scenario.allowed_tool_names),
-        InvestigationBudget(
-            readonly_tool_names=scenario.allowed_tool_names,
-            max_tool_calls=scenario.max_tool_calls,
-        ),
-        LlmInvestigationDiagnostician(
-            client,
-            allowed_cause_codes=frozenset({scenario.expected_primary_cause_code}),
-        ),
+    run = await run_readonly_investigation(
+        mcp_url=mcp_url,
+        client=client,
+        incident=scenario.incident,
+        readonly_tool_names=scenario.allowed_tool_names,
+        max_tool_calls=scenario.max_tool_calls,
+        event_listener=event_listener,
+        allowed_cause_codes=frozenset({scenario.expected_primary_cause_code}),
     )
-    run = await workflow.run(scenario.incident)
     return run, InvestigationEvaluator().evaluate(scenario, run)
 
 

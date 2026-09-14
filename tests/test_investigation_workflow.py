@@ -119,6 +119,41 @@ def test_workflow_collects_planned_readonly_evidence_then_finishes() -> None:
     assert result.investigation_rounds == 1
     assert result.stop_reason == "关键证据已经齐全"
     assert len(planner.contexts) == 2
+    assert [item.status for item in result.planning_traces] == ["planned", "finished"]
+    assert result.planning_traces[0].tool_calls == [
+        ToolCall(name="aoi_judge_get_stream_summary", arguments={"language": "python"}),
+        ToolCall(name="aoi_judge_get_runtime"),
+    ]
+
+
+def test_workflow_emits_display_events_without_changing_evidence_collection() -> None:
+    """展示层只消费事件，不能改变 Planner、预算或 MCP Tool 执行结果。"""
+    call = ToolCall(name="aoi_judge_get_runtime")
+    received: list[str] = []
+    workflow = InvestigationWorkflow(
+        FakeToolGateway([call.name]),
+        ScriptedPlanner(
+            [
+                PlanningDecision(tool_calls=[call]),
+                PlanningDecision(finish_reason="关键证据已经齐全"),
+            ]
+        ),
+        InvestigationBudget(readonly_tool_names=frozenset({call.name})),
+        event_listener=lambda event: received.append(event.kind),
+    )
+
+    result = asyncio.run(workflow.run(_incident()))
+
+    assert result.stop_reason == "关键证据已经齐全"
+    assert received == [
+        "catalog_loaded",
+        "tools_planned",
+        "tools_started",
+        "tool_completed",
+        "planning_finished",
+        "diagnosis_started",
+        "diagnosis_completed",
+    ]
 
 
 def test_workflow_rejects_published_write_tool_before_gateway_execution() -> None:
